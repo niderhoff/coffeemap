@@ -40,7 +40,41 @@
     }
   }
 
-  if (sb) ensureAuth();
+  var isAdmin = false;
+  var hiddenPlaces = new Set();
+
+  if (sb) {
+    ensureAuth();
+    loadHiddenPlaces();
+  }
+
+  async function loadHiddenPlaces() {
+    if (!sb) return;
+    var { data } = await sb.from('hidden_places').select('osm_id');
+    if (data) {
+      hiddenPlaces = new Set(data.map(function (r) { return r.osm_id; }));
+    }
+  }
+
+  function checkAdmin() {
+    if (!currentUser) { isAdmin = false; return; }
+    isAdmin = !currentUser.is_anonymous && !!currentUser.email;
+    updateAdminUI();
+  }
+
+  function updateAdminUI() {
+    var $loggedOut = document.getElementById('admin-logged-out');
+    var $loggedIn = document.getElementById('admin-logged-in');
+    var $status = document.getElementById('admin-status');
+    if (isAdmin) {
+      $loggedOut.style.display = 'none';
+      $loggedIn.classList.remove('hidden');
+      $status.textContent = 'Logged in as ' + currentUser.email;
+    } else {
+      $loggedOut.style.display = '';
+      $loggedIn.classList.add('hidden');
+    }
+  }
 
   // --- State ---
   let map;
@@ -80,6 +114,12 @@
   const $priceError = document.getElementById('price-error');
   const $pillWifi = document.getElementById('pill-wifi');
   const $pillPlant = document.getElementById('pill-plant');
+  const $btnHidePlace = document.getElementById('btn-hide-place');
+  const $btnAdminLogin = document.getElementById('btn-admin-login');
+  const $btnAdminLogout = document.getElementById('btn-admin-logout');
+  const $adminEmail = document.getElementById('admin-email');
+  const $adminPassword = document.getElementById('admin-password');
+  const $adminError = document.getElementById('admin-error');
 
   // --- Coffee icon ---
   function createCoffeeIcon(active, priceText) {
@@ -251,6 +291,8 @@
 
     elements.forEach(function (el) {
       var tags = el.tags || {};
+      var osmId = el.type + '/' + el.id;
+      if (hiddenPlaces.has(osmId) && !isAdmin) return;
       if (wifiOnly && !tags.internet_access) return;
 
       const lat = el.lat || (el.center && el.center.lat);
@@ -377,6 +419,7 @@
     $btnDirections._lat = d._lat;
     $btnDirections._lon = d._lon;
 
+    $btnHidePlace.classList.toggle('hidden', !isAdmin);
     $detail.classList.remove('hidden');
     loadPrices(currentOsmId);
   }
@@ -687,6 +730,53 @@
     if (e.target.closest('#sidebar-content') || e.target.closest('#shop-detail')) return;
     if (e.target.closest('#map')) return;
   }, { passive: true });
+
+  // --- Admin ---
+  $btnAdminLogin.addEventListener('click', async function () {
+    $adminError.classList.add('hidden');
+    var email = $adminEmail.value.trim();
+    var password = $adminPassword.value;
+    if (!email || !password) {
+      $adminError.textContent = 'Enter email and password.';
+      $adminError.classList.remove('hidden');
+      return;
+    }
+    var { data, error } = await sb.auth.signInWithPassword({ email: email, password: password });
+    if (error) {
+      $adminError.textContent = error.message;
+      $adminError.classList.remove('hidden');
+      return;
+    }
+    currentUser = data.session.user;
+    checkAdmin();
+    $adminPassword.value = '';
+    renderShops(lastElements);
+  });
+
+  $btnAdminLogout.addEventListener('click', async function () {
+    await sb.auth.signOut();
+    isAdmin = false;
+    currentUser = null;
+    updateAdminUI();
+    ensureAuth(); // re-create anonymous session
+    renderShops(lastElements);
+  });
+
+  $btnHidePlace.addEventListener('click', async function () {
+    if (!isAdmin || !currentOsmId) return;
+    var { error } = await sb.from('hidden_places').insert({
+      osm_id: currentOsmId,
+      shop_name: currentShopName,
+      hidden_by: currentUser.id,
+    });
+    if (error) {
+      console.error('Hide error:', error);
+      return;
+    }
+    hiddenPlaces.add(currentOsmId);
+    closeDetail();
+    renderShops(lastElements);
+  });
 
   // --- Start ---
   initMap();

@@ -64,6 +64,17 @@
         <h3>About</h3>
         <p class="sidebar-about">Map data &copy; OpenStreetMap contributors. Coffee shop data from Overpass API. Prices submitted by users via Supabase.</p>
         <a href="https://buymeacoffee.com/niid" target="_blank" rel="noopener" class="bmc-link">Buy me a coffee</a>
+        <h3>Admin</h3>
+        <div id="admin-logged-out">
+          <input type="email" id="admin-email" placeholder="Email" autocomplete="email" />
+          <input type="password" id="admin-password" placeholder="Password" autocomplete="current-password" />
+          <button id="btn-admin-login">Log in</button>
+          <p id="admin-error" class="hidden"></p>
+        </div>
+        <div id="admin-logged-in" class="hidden">
+          <p id="admin-status"></p>
+          <button id="btn-admin-logout">Log out</button>
+        </div>
       </div>
     </div>
     <div id="sidebar-overlay" class="hidden"></div>
@@ -94,6 +105,7 @@
         <button id="btn-directions">Directions</button>
         <button id="btn-add-price">Submit Price</button>
       </div>
+      <button id="btn-hide-place" class="hidden">Hide this place (admin)</button>
     </div>
 
     <div id="price-modal" class="hidden">

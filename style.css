@@ -286,6 +286,90 @@ html, body {
   opacity: 0.8;
 }
 
+/* Admin section */
+#admin-logged-out input {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1.5px solid #ddd;
+  border-radius: 8px;
+  font-size: 15px;
+  font-family: inherit;
+  outline: none;
+}
+
+#admin-logged-out input:focus {
+  border-color: var(--coffee);
+}
+
+#btn-admin-login {
+  width: 100%;
+  padding: 9px;
+  background: var(--coffee);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#btn-admin-login:active {
+  background: var(--coffee-dark);
+}
+
+#admin-error {
+  color: #c0392b;
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+#admin-error.hidden {
+  display: none;
+}
+
+#admin-logged-in.hidden {
+  display: none;
+}
+
+#admin-status {
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 8px;
+}
+
+#btn-admin-logout {
+  padding: 8px 16px;
+  background: #eee;
+  color: #555;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#btn-hide-place {
+  width: 100%;
+  padding: 10px;
+  margin-top: 10px;
+  background: #c0392b;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#btn-hide-place.hidden {
+  display: none;
+}
+
+#btn-hide-place:active {
+  background: #962d22;
+}
+
 /* Shop detail panel */
 #shop-detail {
   position: absolute;
