@@ -439,6 +439,12 @@ html, body {
   cursor: pointer;
 }
 
+.price-hint {
+  font-size: 13px;
+  color: #888;
+  margin-bottom: 14px;
+}
+
 .price-field {
   margin-bottom: 14px;
 }
@@ -564,6 +570,27 @@ html, body {
 }
 
 /* Coffee marker icon */
+.coffee-marker-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.marker-price {
+  position: absolute;
+  top: -8px;
+  left: 20px;
+  background: white;
+  color: var(--coffee-dark);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  white-space: nowrap;
+  transform: rotate(0deg);
+  pointer-events: none;
+}
+
 .coffee-marker {
   display: flex;
   align-items: center;

@@ -80,10 +80,13 @@
   const $priceError = document.getElementById('price-error');
 
   // --- Coffee icon ---
-  function createCoffeeIcon(active) {
+  function createCoffeeIcon(active, priceText) {
+    var priceTag = priceText ? '<span class="marker-price">' + priceText + '</span>' : '';
     return L.divIcon({
       className: '',
-      html: '<div class="coffee-marker' + (active ? ' coffee-marker-active' : '') + '"><span>&#9749;</span></div>',
+      html: '<div class="coffee-marker-wrap">' +
+            '<div class="coffee-marker' + (active ? ' coffee-marker-active' : '') + '"><span>&#9749;</span></div>' +
+            priceTag + '</div>',
       iconSize: active ? [38, 38] : [32, 32],
       iconAnchor: active ? [19, 38] : [16, 32],
       popupAnchor: [0, -32],
@@ -266,6 +269,51 @@
 
       shopMarkers.push(marker);
     });
+
+    fetchMarkerPrices();
+  }
+
+  // Batch-fetch prices for all visible markers and add price badges
+  async function fetchMarkerPrices() {
+    if (!sb || shopMarkers.length === 0) return;
+
+    var osmIds = shopMarkers.map(function (m) { return m._shopData._osmId; });
+
+    var { data, error } = await sb
+      .from('prices')
+      .select('osm_id, price_regular, price_plant_milk, created_at')
+      .in('osm_id', osmIds)
+      .order('created_at', { ascending: false });
+
+    if (error || !data || data.length === 0) return;
+
+    // Group by osm_id
+    var byShop = {};
+    data.forEach(function (r) {
+      if (!byShop[r.osm_id]) byShop[r.osm_id] = [];
+      byShop[r.osm_id].push(r);
+    });
+
+    var showPlant = $prefPlantMilk.checked;
+
+    shopMarkers.forEach(function (marker) {
+      var osmId = marker._shopData._osmId;
+      var rows = byShop[osmId];
+      if (!rows || rows.length === 0) return;
+
+      var values = rows
+        .map(function (r) { return showPlant ? (r.price_plant_milk || r.price_regular) : r.price_regular; })
+        .filter(function (v) { return v != null; });
+
+      if (values.length === 0) return;
+
+      var price = latestCleanPrice(values);
+      var text = '\u20AC' + price.toFixed(2);
+      marker._priceText = text;
+
+      var isActive = marker === activeMarker;
+      marker.setIcon(createCoffeeIcon(isActive, text));
+    });
   }
 
   function clearMarkers() {
@@ -277,11 +325,11 @@
   // --- Select / detail ---
   function selectShop(marker) {
     if (activeMarker) {
-      activeMarker.setIcon(createCoffeeIcon(false));
+      activeMarker.setIcon(createCoffeeIcon(false, activeMarker._priceText));
     }
 
     activeMarker = marker;
-    marker.setIcon(createCoffeeIcon(true));
+    marker.setIcon(createCoffeeIcon(true, marker._priceText));
 
     const d = marker._shopData;
     currentOsmId = d._osmId;
@@ -336,7 +384,7 @@
   function closeDetail() {
     $detail.classList.add('hidden');
     if (activeMarker) {
-      activeMarker.setIcon(createCoffeeIcon(false));
+      activeMarker.setIcon(createCoffeeIcon(false, activeMarker._priceText));
       activeMarker = null;
     }
     currentOsmId = null;
@@ -477,6 +525,7 @@
 
     closePriceModal();
     loadPrices(currentOsmId);
+    fetchMarkerPrices();
   }
 
   // --- Search ---
