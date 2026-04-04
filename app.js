@@ -249,7 +249,7 @@
 
     elements.forEach(function (el) {
       var tags = el.tags || {};
-      if (wifiOnly && tags.internet_access !== 'wlan' && tags.internet_access !== 'yes') return;
+      if (wifiOnly && !tags.internet_access) return;
 
       const lat = el.lat || (el.center && el.center.lat);
       const lon = el.lon || (el.center && el.center.lon);
@@ -626,12 +626,19 @@
 
   // WiFi filter: just re-render locally, no new fetch needed
   $filterWifi.addEventListener('change', function () {
-    renderShops(lastElements);
+    if (lastElements.length > 0) {
+      renderShops(lastElements);
+    } else {
+      // No cached data yet, need to fetch first
+      invalidateCache();
+      fetchCoffeeShops();
+    }
   });
 
-  // Plant milk pref: reload prices for current shop
+  // Plant milk pref: reload detail + map marker prices
   $prefPlantMilk.addEventListener('change', function () {
     if (currentOsmId) loadPrices(currentOsmId);
+    fetchMarkerPrices();
   });
 
   // Price modal
