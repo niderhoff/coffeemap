@@ -302,7 +302,7 @@
     $searchInput.blur(); // Close mobile keyboard
 
     showLoading();
-    fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(q + ' coffee') + '&limit=1', {
+    fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(q) + '&limit=1', {
       headers: { 'Accept-Language': 'en' },
     })
       .then(function (res) { return res.json(); })
@@ -310,6 +310,8 @@
         hideLoading();
         if (results.length > 0) {
           const r = results[0];
+          invalidateCache();
+          map.once('moveend', function () { fetchCoffeeShops(); });
           map.flyTo([parseFloat(r.lat), parseFloat(r.lon)], 15, { duration: 1 });
         }
       })
