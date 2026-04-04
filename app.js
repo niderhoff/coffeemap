@@ -60,11 +60,11 @@
       maxZoom: 19,
     }).addTo(map);
 
-    // Load shops on move
+    // Load shops on move — debounce 400ms
     let moveTimer;
     map.on('moveend', function () {
       clearTimeout(moveTimer);
-      moveTimer = setTimeout(fetchCoffeeShops, 600);
+      moveTimer = setTimeout(fetchCoffeeShops, 400);
     });
 
     // Close detail on map click
@@ -104,9 +104,10 @@
     );
   }
 
-  // --- Simple cache: skip fetch if viewport is still inside last fetched area ---
-  var lastFetchBounds = null;  // padded bounds of last successful fetch
-  var lastFilterKey = '';       // filter settings that produced lastFetchBounds
+  // --- Simple cache: skip fetch if map hasn't moved much ---
+  var lastFetchCenter = null;
+  var lastFetchZoom = null;
+  var lastFilterKey = '';
   var CACHE_TTL = 5 * 60 * 1000;
   var lastFetchTime = 0;
 
@@ -118,25 +119,27 @@
   }
 
   function invalidateCache() {
-    lastFetchBounds = null;
+    lastFetchCenter = null;
     lastFilterKey = '';
   }
 
   // --- Overpass API: fetch coffee shops ---
   function fetchCoffeeShops() {
     const bounds = map.getBounds();
+    var center = map.getCenter();
+    var zoom = map.getZoom();
     var filterKey = getFilterKey();
 
-    // Skip fetch if viewport is still within the last fetched (padded) area
-    // and filters haven't changed and cache hasn't expired
-    if (lastFetchBounds && filterKey === lastFilterKey &&
-        lastFetchBounds.contains(bounds) &&
+    // Skip fetch if we haven't moved far from last fetch
+    if (lastFetchCenter && filterKey === lastFilterKey &&
+        zoom === lastFetchZoom &&
+        center.distanceTo(lastFetchCenter) < 500 &&
         Date.now() - lastFetchTime < CACHE_TTL) {
       return;
     }
 
-    // Pad bounds by 30% so small pans reuse this fetch
-    var padded = bounds.pad(0.3);
+    // Pad bounds by 20% so we fetch a bit more than visible
+    var padded = bounds.pad(0.2);
     const south = padded.getSouth().toFixed(6);
     const west = padded.getWest().toFixed(6);
     const north = padded.getNorth().toFixed(6);
@@ -179,7 +182,8 @@
       .then(function (data) {
         hideLoading();
         var elements = data.elements || [];
-        lastFetchBounds = padded;
+        lastFetchCenter = map.getCenter();
+        lastFetchZoom = map.getZoom();
         lastFilterKey = filterKey;
         lastFetchTime = Date.now();
         renderShops(elements);
@@ -311,7 +315,6 @@
         if (results.length > 0) {
           const r = results[0];
           invalidateCache();
-          map.once('moveend', function () { fetchCoffeeShops(); });
           map.flyTo([parseFloat(r.lat), parseFloat(r.lon)], 15, { duration: 1 });
         }
       })
