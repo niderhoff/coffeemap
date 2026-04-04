@@ -157,14 +157,14 @@
   var lastFetchCenter = null;
   var lastFetchZoom = null;
   var lastFilterKey = '';
+  var lastElements = [];
   var CACHE_TTL = 5 * 60 * 1000;
   var lastFetchTime = 0;
 
   function getFilterKey() {
     return ($filterCafe.checked ? 'c' : '') +
            ($filterEspresso.checked ? 'e' : '') +
-           ($filterRoastery.checked ? 'r' : '') +
-           ($filterWifi.checked ? 'w' : '');
+           ($filterRoastery.checked ? 'r' : '');
   }
 
   function invalidateCache() {
@@ -193,19 +193,18 @@
     const east = padded.getEast().toFixed(6);
     const bbox = south + ',' + west + ',' + north + ',' + east;
 
-    var wifi = $filterWifi.checked ? '["internet_access"~"wlan|yes"]' : '';
     const filters = [];
     if ($filterCafe.checked) {
-      filters.push('node["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]'+wifi+'('+bbox+');');
-      filters.push('way["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]'+wifi+'('+bbox+');');
+      filters.push('node["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
+      filters.push('way["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
     }
     if ($filterEspresso.checked) {
-      filters.push('node["cuisine"~"coffee|coffee_shop"]'+wifi+'('+bbox+');');
-      filters.push('way["cuisine"~"coffee|coffee_shop"]'+wifi+'('+bbox+');');
+      filters.push('node["cuisine"~"coffee|coffee_shop"]('+bbox+');');
+      filters.push('way["cuisine"~"coffee|coffee_shop"]('+bbox+');');
     }
     if ($filterRoastery.checked) {
-      filters.push('node["craft"="roastery"]'+wifi+'('+bbox+');');
-      filters.push('way["craft"="roastery"]'+wifi+'('+bbox+');');
+      filters.push('node["craft"="roastery"]('+bbox+');');
+      filters.push('way["craft"="roastery"]('+bbox+');');
     }
 
     if (filters.length === 0) {
@@ -227,12 +226,12 @@
       .then(function (res) { return res.json(); })
       .then(function (data) {
         hideLoading();
-        var elements = data.elements || [];
+        lastElements = data.elements || [];
         lastFetchCenter = map.getCenter();
         lastFetchZoom = map.getZoom();
         lastFilterKey = filterKey;
         lastFetchTime = Date.now();
-        renderShops(elements);
+        renderShops(lastElements);
       })
       .catch(function (err) {
         hideLoading();
@@ -246,8 +245,12 @@
   function renderShops(elements) {
     clearMarkers();
     const seen = new Set();
+    var wifiOnly = $filterWifi.checked;
 
     elements.forEach(function (el) {
+      var tags = el.tags || {};
+      if (wifiOnly && tags.internet_access !== 'wlan' && tags.internet_access !== 'yes') return;
+
       const lat = el.lat || (el.center && el.center.lat);
       const lon = el.lon || (el.center && el.center.lon);
       if (!lat || !lon) return;
@@ -614,11 +617,16 @@
   });
 
   // Filters
-  [$filterCafe, $filterEspresso, $filterRoastery, $filterWifi].forEach(function (cb) {
+  [$filterCafe, $filterEspresso, $filterRoastery].forEach(function (cb) {
     cb.addEventListener('change', function () {
       invalidateCache();
       fetchCoffeeShops();
     });
+  });
+
+  // WiFi filter: just re-render locally, no new fetch needed
+  $filterWifi.addEventListener('change', function () {
+    renderShops(lastElements);
   });
 
   // Plant milk pref: reload prices for current shop
