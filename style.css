@@ -570,6 +570,10 @@ html, body {
 }
 
 /* Coffee marker icon */
+.leaflet-marker-icon {
+  overflow: visible !important;
+}
+
 .coffee-marker-wrap {
   position: relative;
   display: inline-block;

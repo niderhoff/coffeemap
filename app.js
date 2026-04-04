@@ -279,13 +279,20 @@
 
     var osmIds = shopMarkers.map(function (m) { return m._shopData._osmId; });
 
-    var { data, error } = await sb
-      .from('prices')
-      .select('osm_id, price_regular, price_plant_milk, created_at')
-      .in('osm_id', osmIds)
-      .order('created_at', { ascending: false });
+    // Supabase .in() has URL length limits, chunk if needed
+    var allData = [];
+    for (var i = 0; i < osmIds.length; i += 30) {
+      var chunk = osmIds.slice(i, i + 30);
+      var { data, error } = await sb
+        .from('prices')
+        .select('osm_id, price_regular, price_plant_milk, created_at')
+        .in('osm_id', chunk)
+        .order('created_at', { ascending: false });
+      if (!error && data) allData = allData.concat(data);
+    }
 
-    if (error || !data || data.length === 0) return;
+    if (allData.length === 0) return;
+    data = allData;
 
     // Group by osm_id
     var byShop = {};
