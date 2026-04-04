@@ -615,7 +615,10 @@
 
   // Filters
   [$filterCafe, $filterEspresso, $filterRoastery, $filterWifi].forEach(function (cb) {
-    cb.addEventListener('change', fetchCoffeeShops);
+    cb.addEventListener('change', function () {
+      invalidateCache();
+      fetchCoffeeShops();
+    });
   });
 
   // Plant milk pref: reload prices for current shop
