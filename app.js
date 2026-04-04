@@ -57,9 +57,17 @@
   }
 
   function checkAdmin() {
-    if (!currentUser) { isAdmin = false; return; }
-    isAdmin = !currentUser.is_anonymous && !!currentUser.email;
-    updateAdminUI();
+    if (!currentUser) { isAdmin = false; updateAdminUI(); return; }
+    // Verify against server-side admins table
+    sb.from('admins').select('user_id').eq('user_id', currentUser.id).maybeSingle()
+      .then(function (res) {
+        isAdmin = !!(res.data);
+        updateAdminUI();
+      })
+      .catch(function () {
+        isAdmin = false;
+        updateAdminUI();
+      });
   }
 
   function updateAdminUI() {
