@@ -203,6 +203,20 @@
     marker.setIcon(createCoffeeIcon(true));
 
     const d = marker._shopData;
+
+    // Photo: try image tag, then wikimedia_commons
+    var $photoWrap = document.getElementById('detail-photo-wrap');
+    var $photo = document.getElementById('detail-photo');
+    var photoUrl = getPhotoUrl(d);
+    if (photoUrl) {
+      $photo.src = photoUrl;
+      $photo.onerror = function () { $photoWrap.classList.add('hidden'); };
+      $photoWrap.classList.remove('hidden');
+    } else {
+      $photoWrap.classList.add('hidden');
+      $photo.src = '';
+    }
+
     document.getElementById('detail-name').textContent = d.name || 'Coffee Shop';
     document.getElementById('detail-cuisine').textContent = d.cuisine ? 'Cuisine: ' + d.cuisine : '';
     document.getElementById('detail-address').textContent = formatAddress(d);
@@ -293,6 +307,23 @@
 
   function truncate(str, len) {
     return str.length > len ? str.substring(0, len) + '...' : str;
+  }
+
+  function getPhotoUrl(tags) {
+    // Direct image URL
+    if (tags.image) {
+      return tags.image;
+    }
+    // Wikimedia Commons file name → thumbnail URL
+    if (tags.wikimedia_commons) {
+      var file = tags.wikimedia_commons.replace(/^File:/, '').replace(/ /g, '_');
+      return 'https://commons.wikimedia.org/wiki/Special:FilePath/' + encodeURIComponent(file) + '?width=400';
+    }
+    // Wikidata ID → use wikidata thumbnail API
+    if (tags.wikidata) {
+      return null; // would need async fetch, skip for now
+    }
+    return null;
   }
 
   // --- Event listeners ---

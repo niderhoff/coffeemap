@@ -239,7 +239,7 @@ html, body {
   padding-bottom: calc(16px + var(--safe-bottom));
   transform: translateY(0);
   transition: transform 0.3s ease;
-  max-height: 50vh;
+  max-height: 65vh;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -261,6 +261,26 @@ html, body {
   font-size: 18px;
   flex: 1;
   padding-right: 8px;
+}
+
+#detail-photo-wrap {
+  margin: -16px -16px 12px -16px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  overflow: hidden;
+  background: #f0ebe4;
+  max-height: 200px;
+}
+
+#detail-photo-wrap.hidden {
+  display: none;
+}
+
+#detail-photo {
+  width: 100%;
+  height: auto;
+  max-height: 200px;
+  object-fit: cover;
+  display: block;
 }
 
 #btn-close-detail {
