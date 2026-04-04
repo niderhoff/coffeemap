@@ -78,6 +78,8 @@
   const $inputPrice = document.getElementById('input-price');
   const $inputPricePlant = document.getElementById('input-price-plant');
   const $priceError = document.getElementById('price-error');
+  const $pillWifi = document.getElementById('pill-wifi');
+  const $pillPlant = document.getElementById('pill-plant');
 
   // --- Coffee icon ---
   function createCoffeeIcon(active, priceText) {
@@ -650,6 +652,27 @@
     if (currentOsmId) loadPrices(currentOsmId);
     fetchMarkerPrices();
   });
+
+  // Quick-access pills — sync with sidebar checkboxes
+  function syncPill(pill, checkbox) {
+    pill.dataset.active = String(checkbox.checked);
+  }
+
+  $pillWifi.addEventListener('click', function () {
+    $filterWifi.checked = !$filterWifi.checked;
+    syncPill($pillWifi, $filterWifi);
+    $filterWifi.dispatchEvent(new Event('change'));
+  });
+
+  $pillPlant.addEventListener('click', function () {
+    $prefPlantMilk.checked = !$prefPlantMilk.checked;
+    syncPill($pillPlant, $prefPlantMilk);
+    $prefPlantMilk.dispatchEvent(new Event('change'));
+  });
+
+  // Keep pills in sync when sidebar checkboxes change
+  $filterWifi.addEventListener('change', function () { syncPill($pillWifi, $filterWifi); });
+  $prefPlantMilk.addEventListener('change', function () { syncPill($pillPlant, $prefPlantMilk); });
 
   // Price modal
   $btnAddPrice.addEventListener('click', openPriceModal);

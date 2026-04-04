@@ -89,6 +89,49 @@ html, body {
   color: var(--coffee-light);
 }
 
+/* Quick filter pills */
+#quick-filters {
+  position: absolute;
+  top: calc(68px + var(--safe-top));
+  left: 12px;
+  right: 12px;
+  z-index: 1000;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+#quick-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.pill {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border: 1.5px solid #ccc;
+  border-radius: 20px;
+  background: white;
+  color: #555;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  transition: all 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.pill:active {
+  transform: scale(0.95);
+}
+
+.pill[data-active="true"] {
+  background: var(--coffee);
+  color: white;
+  border-color: var(--coffee);
+}
+
 /* Controls */
 #controls {
   position: absolute;
