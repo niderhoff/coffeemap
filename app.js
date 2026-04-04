@@ -104,13 +104,52 @@
     );
   }
 
+  // --- Query cache ---
+  // Keyed by query string, stores { elements, bounds, timestamp }
+  var queryCache = {};
+  var CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  var CACHE_MAX = 50;
+
+  function getCacheKey(filters, wifi) {
+    return wifi + '|' + filters.sort().join('');
+  }
+
+  function pruneCache() {
+    var keys = Object.keys(queryCache);
+    if (keys.length <= CACHE_MAX) return;
+    // Remove oldest entries
+    keys.sort(function (a, b) { return queryCache[a].timestamp - queryCache[b].timestamp; });
+    for (var i = 0; i < keys.length - CACHE_MAX; i++) {
+      delete queryCache[keys[i]];
+    }
+  }
+
+  // Check if current bounds are fully inside a cached entry's bounds
+  function findCacheHit(filterKey, bounds) {
+    var now = Date.now();
+    for (var key in queryCache) {
+      if (key.indexOf(filterKey) !== 0) continue;
+      var entry = queryCache[key];
+      if (now - entry.timestamp > CACHE_TTL) {
+        delete queryCache[key];
+        continue;
+      }
+      if (entry.bounds.contains(bounds)) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
   // --- Overpass API: fetch coffee shops ---
   function fetchCoffeeShops() {
     const bounds = map.getBounds();
-    const south = bounds.getSouth().toFixed(6);
-    const west = bounds.getWest().toFixed(6);
-    const north = bounds.getNorth().toFixed(6);
-    const east = bounds.getEast().toFixed(6);
+    // Pad bounds by 20% so small pans don't trigger new requests
+    var padded = bounds.pad(0.2);
+    const south = padded.getSouth().toFixed(6);
+    const west = padded.getWest().toFixed(6);
+    const north = padded.getNorth().toFixed(6);
+    const east = padded.getEast().toFixed(6);
     const bbox = south + ',' + west + ',' + north + ',' + east;
 
     // Build filter from checkboxes — exclude obvious non-coffee places
@@ -134,6 +173,18 @@
       return;
     }
 
+    // Check cache — use filter key (without bbox) for matching
+    var filterKey = getCacheKey(filters.map(function (f) {
+      // Strip bbox to get a filter-only key
+      return f.replace(/\([^)]*\)/, '');
+    }), wifi);
+
+    var hit = findCacheHit(filterKey, bounds);
+    if (hit) {
+      renderShops(hit.elements);
+      return;
+    }
+
     const query = '[out:json][timeout:15];(' + filters.join('') + ');out center 80;';
 
     if (searchAbort) searchAbort.abort();
@@ -147,7 +198,16 @@
       .then(function (res) { return res.json(); })
       .then(function (data) {
         hideLoading();
-        renderShops(data.elements || []);
+        var elements = data.elements || [];
+        // Store in cache
+        var cacheKey = filterKey + '|' + bbox;
+        queryCache[cacheKey] = {
+          elements: elements,
+          bounds: padded,
+          timestamp: Date.now(),
+        };
+        pruneCache();
+        renderShops(elements);
       })
       .catch(function (err) {
         hideLoading();
