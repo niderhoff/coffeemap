@@ -52,8 +52,12 @@
         <label class="filter-option">
           <input type="checkbox" id="filter-wifi" /> WiFi available
         </label>
+        <h3>Prices</h3>
+        <label class="filter-option">
+          <input type="checkbox" id="pref-plant-milk" /> Show plant milk prices
+        </label>
         <h3>About</h3>
-        <p class="sidebar-about">Map data &copy; OpenStreetMap contributors. Coffee shop data from Overpass API.</p>
+        <p class="sidebar-about">Map data &copy; OpenStreetMap contributors. Coffee shop data from Overpass API. Prices submitted by users via Supabase.</p>
       </div>
     </div>
     <div id="sidebar-overlay" class="hidden"></div>
@@ -74,8 +78,40 @@
         <p id="detail-wifi"></p>
         <p id="detail-website"></p>
       </div>
+      <div id="detail-price-section">
+        <h4>Cappuccino Price</h4>
+        <div id="price-display">
+          <p class="price-empty">No prices yet</p>
+        </div>
+      </div>
       <div id="detail-actions">
         <button id="btn-directions">Directions</button>
+        <button id="btn-add-price">Submit Price</button>
+      </div>
+    </div>
+
+    <div id="price-modal" class="hidden">
+      <div id="price-modal-content">
+        <div id="price-modal-header">
+          <h3>Submit Cappuccino Price</h3>
+          <button id="btn-close-price" aria-label="Close">&times;</button>
+        </div>
+        <div class="price-field">
+          <label for="input-price">Regular milk</label>
+          <div class="price-input-wrap">
+            <span class="currency-symbol">&euro;</span>
+            <input type="number" id="input-price" placeholder="0.00" step="0.10" min="0" max="99.99" inputmode="decimal" />
+          </div>
+        </div>
+        <div class="price-field">
+          <label for="input-price-plant">Plant milk (oat, soy, etc.)</label>
+          <div class="price-input-wrap">
+            <span class="currency-symbol">&euro;</span>
+            <input type="number" id="input-price-plant" placeholder="0.00" step="0.10" min="0" max="99.99" inputmode="decimal" />
+          </div>
+        </div>
+        <button id="btn-submit-price">Submit</button>
+        <p id="price-error" class="hidden"></p>
       </div>
     </div>
 
@@ -86,6 +122,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

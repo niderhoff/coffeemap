@@ -79,7 +79,7 @@ html, body {
   flex: 1;
   border: none;
   outline: none;
-  font-size: 16px; /* Prevents iOS zoom */
+  font-size: 16px;
   padding: 8px 4px;
   background: transparent;
   color: var(--coffee-dark);
@@ -239,7 +239,7 @@ html, body {
   padding-bottom: calc(16px + var(--safe-bottom));
   transform: translateY(0);
   transition: transform 0.3s ease;
-  max-height: 65vh;
+  max-height: 70vh;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -306,12 +306,58 @@ html, body {
   display: none;
 }
 
+/* Price section */
+#detail-price-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #eee;
+}
+
+#detail-price-section h4 {
+  color: var(--coffee-dark);
+  font-size: 15px;
+  margin-bottom: 8px;
+}
+
+.price-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.price-label {
+  font-size: 14px;
+  color: #555;
+}
+
+.price-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--coffee-dark);
+}
+
+.price-count {
+  font-size: 12px;
+  color: #999;
+  margin-left: 6px;
+}
+
+.price-empty {
+  font-size: 13px;
+  color: #999;
+  font-style: italic;
+}
+
+/* Action buttons */
 #detail-actions {
+  display: flex;
+  gap: 8px;
   margin-top: 14px;
 }
 
 #btn-directions {
-  width: 100%;
+  flex: 1;
   padding: 12px;
   background: var(--coffee);
   color: white;
@@ -325,6 +371,147 @@ html, body {
 
 #btn-directions:active {
   background: var(--coffee-dark);
+}
+
+#btn-add-price {
+  flex: 1;
+  padding: 12px;
+  background: white;
+  color: var(--coffee);
+  border: 2px solid var(--coffee);
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+#btn-add-price:active {
+  background: var(--cream);
+}
+
+/* Price modal */
+#price-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 2500;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  transition: opacity 0.2s;
+}
+
+#price-modal.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#price-modal-content {
+  background: white;
+  width: 100%;
+  max-width: 500px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 20px 16px;
+  padding-bottom: calc(20px + var(--safe-bottom));
+}
+
+#price-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+#price-modal-header h3 {
+  color: var(--coffee-dark);
+  font-size: 18px;
+}
+
+#btn-close-price {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: #f0f0f0;
+  font-size: 20px;
+  border-radius: 50%;
+  color: #666;
+  cursor: pointer;
+}
+
+.price-field {
+  margin-bottom: 14px;
+}
+
+.price-field label {
+  display: block;
+  font-size: 14px;
+  color: #555;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.price-input-wrap {
+  display: flex;
+  align-items: center;
+  border: 1.5px solid #ddd;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.price-input-wrap:focus-within {
+  border-color: var(--coffee);
+}
+
+.currency-symbol {
+  padding: 10px 12px;
+  font-size: 16px;
+  color: #888;
+  background: #f8f8f8;
+  border-right: 1px solid #eee;
+}
+
+.price-field input {
+  flex: 1;
+  border: none;
+  outline: none;
+  padding: 10px;
+  font-size: 16px;
+  font-family: inherit;
+  background: transparent;
+}
+
+#btn-submit-price {
+  width: 100%;
+  padding: 13px;
+  background: var(--coffee);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#btn-submit-price:active {
+  background: var(--coffee-dark);
+}
+
+#btn-submit-price:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+#price-error {
+  color: #c0392b;
+  font-size: 13px;
+  margin-top: 8px;
+  text-align: center;
+}
+
+#price-error.hidden {
+  display: none;
 }
 
 /* Loading */
@@ -367,7 +554,7 @@ html, body {
 
 /* Leaflet overrides for clean mobile look */
 .leaflet-control-zoom {
-  display: none !important; /* Pinch-to-zoom on mobile, hide buttons */
+  display: none !important;
 }
 
 .leaflet-control-attribution {

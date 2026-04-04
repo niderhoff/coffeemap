@@ -3,6 +3,27 @@
 (function () {
   'use strict';
 
+  // --- Supabase ---
+  var SUPABASE_URL = 'https://rosfemsvecvsszgkhjns.supabase.co';
+  var SUPABASE_KEY = 'sb_publishable_ZpxXIsFgIvs5DbfFFt_7vQ_WyjWTRHZ';
+  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  var currentUser = null;
+
+  async function ensureAuth() {
+    if (currentUser) return currentUser;
+    var { data } = await sb.auth.getSession();
+    if (data.session) {
+      currentUser = data.session.user;
+      return currentUser;
+    }
+    var { data: signIn, error } = await sb.auth.signInAnonymously();
+    if (error) { console.error('Auth error:', error); return null; }
+    currentUser = signIn.session.user;
+    return currentUser;
+  }
+
+  ensureAuth();
+
   // --- State ---
   let map;
   let userMarker;
@@ -10,6 +31,8 @@
   let shopMarkers = [];
   let activeMarker = null;
   let searchAbort = null;
+  let currentOsmId = null;
+  let currentShopName = null;
 
   // --- DOM refs ---
   const $map = document.getElementById('map');
@@ -28,6 +51,15 @@
   const $filterEspresso = document.getElementById('filter-espresso');
   const $filterRoastery = document.getElementById('filter-roastery');
   const $filterWifi = document.getElementById('filter-wifi');
+  const $prefPlantMilk = document.getElementById('pref-plant-milk');
+  const $priceDisplay = document.getElementById('price-display');
+  const $priceModal = document.getElementById('price-modal');
+  const $btnAddPrice = document.getElementById('btn-add-price');
+  const $btnClosePrice = document.getElementById('btn-close-price');
+  const $btnSubmitPrice = document.getElementById('btn-submit-price');
+  const $inputPrice = document.getElementById('input-price');
+  const $inputPricePlant = document.getElementById('input-price-plant');
+  const $priceError = document.getElementById('price-error');
 
   // --- Coffee icon ---
   function createCoffeeIcon(active) {
@@ -53,26 +85,23 @@
       zoomControl: true,
       attributionControl: true,
       tap: true,
-    }).setView([40.7128, -74.006], 14); // Default: NYC
+    }).setView([40.7128, -74.006], 14);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
       maxZoom: 19,
     }).addTo(map);
 
-    // Load shops on move — debounce 400ms
     let moveTimer;
     map.on('moveend', function () {
       clearTimeout(moveTimer);
       moveTimer = setTimeout(fetchCoffeeShops, 400);
     });
 
-    // Close detail on map click
     map.on('click', function () {
       closeDetail();
     });
 
-    // Initial locate
     locateUser(true);
   }
 
@@ -97,14 +126,13 @@
         }
       },
       function () {
-        // Geolocation denied/failed — just use default view and fetch
         if (initial) fetchCoffeeShops();
       },
       { enableHighAccuracy: true, timeout: 8000 }
     );
   }
 
-  // --- Simple cache: skip fetch if map hasn't moved much ---
+  // --- Simple cache ---
   var lastFetchCenter = null;
   var lastFetchZoom = null;
   var lastFilterKey = '';
@@ -123,14 +151,13 @@
     lastFilterKey = '';
   }
 
-  // --- Overpass API: fetch coffee shops ---
+  // --- Overpass API ---
   function fetchCoffeeShops() {
     const bounds = map.getBounds();
     var center = map.getCenter();
     var zoom = map.getZoom();
     var filterKey = getFilterKey();
 
-    // Skip fetch if we haven't moved far from last fetch
     if (lastFetchCenter && filterKey === lastFilterKey &&
         zoom === lastFetchZoom &&
         center.distanceTo(lastFetchCenter) < 500 &&
@@ -138,7 +165,6 @@
       return;
     }
 
-    // Pad bounds by 20% so we fetch a bit more than visible
     var padded = bounds.pad(0.2);
     const south = padded.getSouth().toFixed(6);
     const west = padded.getWest().toFixed(6);
@@ -146,7 +172,6 @@
     const east = padded.getEast().toFixed(6);
     const bbox = south + ',' + west + ',' + north + ',' + east;
 
-    // Build filter from checkboxes — exclude obvious non-coffee places
     var wifi = $filterWifi.checked ? '["internet_access"~"wlan|yes"]' : '';
     const filters = [];
     if ($filterCafe.checked) {
@@ -199,7 +224,6 @@
   // --- Render shop markers ---
   function renderShops(elements) {
     clearMarkers();
-
     const seen = new Set();
 
     elements.forEach(function (el) {
@@ -215,6 +239,7 @@
       marker._shopData = el.tags || {};
       marker._shopData._lat = lat;
       marker._shopData._lon = lon;
+      marker._shopData._osmId = el.type + '/' + el.id;
 
       marker.on('click', function (e) {
         L.DomEvent.stopPropagation(e);
@@ -233,7 +258,6 @@
 
   // --- Select / detail ---
   function selectShop(marker) {
-    // Reset previous
     if (activeMarker) {
       activeMarker.setIcon(createCoffeeIcon(false));
     }
@@ -242,8 +266,9 @@
     marker.setIcon(createCoffeeIcon(true));
 
     const d = marker._shopData;
+    currentOsmId = d._osmId;
+    currentShopName = d.name || 'Coffee Shop';
 
-    // Photo: try image tag, then wikimedia_commons
     var $photoWrap = document.getElementById('detail-photo-wrap');
     var $photo = document.getElementById('detail-photo');
     var photoUrl = getPhotoUrl(d);
@@ -256,7 +281,7 @@
       $photo.src = '';
     }
 
-    document.getElementById('detail-name').textContent = d.name || 'Coffee Shop';
+    document.getElementById('detail-name').textContent = currentShopName;
     document.getElementById('detail-cuisine').textContent = d.cuisine ? 'Cuisine: ' + d.cuisine : '';
     document.getElementById('detail-address').textContent = formatAddress(d);
     document.getElementById('detail-hours').textContent = d.opening_hours ? 'Hours: ' + d.opening_hours : '';
@@ -271,11 +296,11 @@
       $website.textContent = '';
     }
 
-    // Store lat/lon for directions
     $btnDirections._lat = d._lat;
     $btnDirections._lon = d._lon;
 
     $detail.classList.remove('hidden');
+    loadPrices(currentOsmId);
   }
 
   function formatAddress(tags) {
@@ -296,14 +321,124 @@
       activeMarker.setIcon(createCoffeeIcon(false));
       activeMarker = null;
     }
+    currentOsmId = null;
   }
 
-  // --- Search (geocode + re-center) ---
+  // --- Prices ---
+  async function loadPrices(osmId) {
+    $priceDisplay.innerHTML = '<p class="price-empty">Loading prices...</p>';
+
+    var { data, error } = await sb
+      .from('prices')
+      .select('price_regular, price_plant_milk, created_at')
+      .eq('osm_id', osmId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error || !data || data.length === 0) {
+      $priceDisplay.innerHTML = '<p class="price-empty">No prices yet. Be the first to submit!</p>';
+      return;
+    }
+
+    var showPlant = $prefPlantMilk.checked;
+
+    // Compute averages
+    var regPrices = data.filter(function (r) { return r.price_regular != null; });
+    var plantPrices = data.filter(function (r) { return r.price_plant_milk != null; });
+
+    var html = '';
+
+    if (regPrices.length > 0) {
+      var avg = regPrices.reduce(function (s, r) { return s + r.price_regular; }, 0) / regPrices.length;
+      html += '<div class="price-row">' +
+        '<span class="price-label">Regular milk</span>' +
+        '<span><span class="price-value">&euro;' + avg.toFixed(2) + '</span>' +
+        '<span class="price-count">(' + regPrices.length + ' report' + (regPrices.length !== 1 ? 's' : '') + ')</span></span></div>';
+    }
+
+    if (showPlant && plantPrices.length > 0) {
+      var avgPlant = plantPrices.reduce(function (s, r) { return s + r.price_plant_milk; }, 0) / plantPrices.length;
+      html += '<div class="price-row">' +
+        '<span class="price-label">Plant milk</span>' +
+        '<span><span class="price-value">&euro;' + avgPlant.toFixed(2) + '</span>' +
+        '<span class="price-count">(' + plantPrices.length + ' report' + (plantPrices.length !== 1 ? 's' : '') + ')</span></span></div>';
+    }
+
+    if (!html) {
+      html = '<p class="price-empty">No prices yet. Be the first to submit!</p>';
+    }
+
+    $priceDisplay.innerHTML = html;
+  }
+
+  function openPriceModal() {
+    $inputPrice.value = '';
+    $inputPricePlant.value = '';
+    $priceError.classList.add('hidden');
+    $btnSubmitPrice.disabled = false;
+    $priceModal.classList.remove('hidden');
+  }
+
+  function closePriceModal() {
+    $priceModal.classList.add('hidden');
+  }
+
+  async function submitPrice() {
+    var regular = parseFloat($inputPrice.value);
+    var plant = parseFloat($inputPricePlant.value);
+
+    if (isNaN(regular) && isNaN(plant)) {
+      $priceError.textContent = 'Please enter at least one price.';
+      $priceError.classList.remove('hidden');
+      return;
+    }
+
+    if ((!isNaN(regular) && (regular <= 0 || regular > 99.99)) ||
+        (!isNaN(plant) && (plant <= 0 || plant > 99.99))) {
+      $priceError.textContent = 'Price must be between 0.01 and 99.99.';
+      $priceError.classList.remove('hidden');
+      return;
+    }
+
+    $btnSubmitPrice.disabled = true;
+    $priceError.classList.add('hidden');
+
+    var user = await ensureAuth();
+    if (!user) {
+      $priceError.textContent = 'Could not sign in. Please try again.';
+      $priceError.classList.remove('hidden');
+      $btnSubmitPrice.disabled = false;
+      return;
+    }
+
+    var row = {
+      user_id: user.id,
+      osm_id: currentOsmId,
+      shop_name: currentShopName,
+      drink: 'cappuccino',
+      price_regular: isNaN(regular) ? null : regular,
+      price_plant_milk: isNaN(plant) ? null : plant,
+    };
+
+    var { error } = await sb.from('prices').insert(row);
+
+    if (error) {
+      $priceError.textContent = error.message || 'Could not submit price.';
+      $priceError.classList.remove('hidden');
+      $btnSubmitPrice.disabled = false;
+      return;
+    }
+
+    closePriceModal();
+    loadPrices(currentOsmId);
+  }
+
+  // --- Search ---
   function doSearch() {
     const q = $searchInput.value.trim();
     if (!q) return;
 
-    $searchInput.blur(); // Close mobile keyboard
+    $searchInput.blur();
 
     showLoading();
     fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(q) + '&limit=1', {
@@ -350,18 +485,10 @@
   }
 
   function getPhotoUrl(tags) {
-    // Direct image URL
-    if (tags.image) {
-      return tags.image;
-    }
-    // Wikimedia Commons file name → thumbnail URL
+    if (tags.image) return tags.image;
     if (tags.wikimedia_commons) {
       var file = tags.wikimedia_commons.replace(/^File:/, '').replace(/ /g, '_');
       return 'https://commons.wikimedia.org/wiki/Special:FilePath/' + encodeURIComponent(file) + '?width=400';
-    }
-    // Wikidata ID → use wikidata thumbnail API
-    if (tags.wikidata) {
-      return null; // would need async fetch, skip for now
     }
     return null;
   }
@@ -377,19 +504,30 @@
     if (e.key === 'Enter') doSearch();
   });
 
-  // Directions button opens external maps
   $btnDirections.addEventListener('click', function () {
     var lat = this._lat;
     var lon = this._lon;
-    // Try native maps on mobile, fallback to OSM
     var url = 'https://www.openstreetmap.org/directions?from=&to=' + lat + ',' + lon;
     window.open(url, '_blank');
   });
 
-  // Filter changes trigger refetch
+  // Filters
   [$filterCafe, $filterEspresso, $filterRoastery, $filterWifi].forEach(function (cb) {
     cb.addEventListener('change', fetchCoffeeShops);
   });
+
+  // Plant milk pref: reload prices for current shop
+  $prefPlantMilk.addEventListener('change', function () {
+    if (currentOsmId) loadPrices(currentOsmId);
+  });
+
+  // Price modal
+  $btnAddPrice.addEventListener('click', openPriceModal);
+  $btnClosePrice.addEventListener('click', closePriceModal);
+  $priceModal.addEventListener('click', function (e) {
+    if (e.target === $priceModal) closePriceModal();
+  });
+  $btnSubmitPrice.addEventListener('click', submitPrice);
 
   // Prevent pull-to-refresh on mobile
   document.body.addEventListener('touchmove', function (e) {
