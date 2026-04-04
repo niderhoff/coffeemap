@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#6F4E37">
+  <title>CoffeeMap</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="map"></div>
+
+    <div id="search-bar">
+      <button id="btn-menu" aria-label="Menu">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <input type="text" id="search-input" placeholder="Search coffee shops..." autocomplete="off" />
+      <button id="btn-search" aria-label="Search">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="2"/><path d="M13 13l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+
+    <div id="controls">
+      <button id="btn-locate" aria-label="My location">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="11" cy="11" r="3" fill="currentColor"/><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M11 0v4M11 18v4M0 11h4M18 11h4" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+    </div>
+
+    <div id="sidebar" class="hidden">
+      <div id="sidebar-header">
+        <h2>CoffeeMap</h2>
+        <button id="btn-close-sidebar" aria-label="Close">&times;</button>
+      </div>
+      <div id="sidebar-content">
+        <p class="sidebar-description">Find the best coffee shops near you using OpenStreetMap data.</p>
+        <h3>Filters</h3>
+        <label class="filter-option">
+          <input type="checkbox" id="filter-cafe" checked /> Cafes
+        </label>
+        <label class="filter-option">
+          <input type="checkbox" id="filter-espresso" checked /> Espresso bars
+        </label>
+        <label class="filter-option">
+          <input type="checkbox" id="filter-roastery" checked /> Roasteries
+        </label>
+        <h3>About</h3>
+        <p class="sidebar-about">Map data &copy; OpenStreetMap contributors. Coffee shop data from Overpass API.</p>
+      </div>
+    </div>
+    <div id="sidebar-overlay" class="hidden"></div>
+
+    <div id="shop-detail" class="hidden">
+      <div id="detail-header">
+        <h3 id="detail-name"></h3>
+        <button id="btn-close-detail" aria-label="Close">&times;</button>
+      </div>
+      <div id="detail-body">
+        <p id="detail-cuisine"></p>
+        <p id="detail-address"></p>
+        <p id="detail-hours"></p>
+        <p id="detail-phone"></p>
+        <p id="detail-website"></p>
+      </div>
+      <div id="detail-actions">
+        <button id="btn-directions">Directions</button>
+      </div>
+    </div>
+
+    <div id="loading" class="hidden">
+      <div class="spinner"></div>
+      <span>Finding coffee shops...</span>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
