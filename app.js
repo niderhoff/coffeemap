@@ -125,6 +125,9 @@
   const $btnHidePlace = document.getElementById('btn-hide-place');
   const $btnAdminLogin = document.getElementById('btn-admin-login');
   const $btnAdminLogout = document.getElementById('btn-admin-logout');
+  const $adminLoginLink = document.getElementById('admin-login-link');
+  const $loginModal = document.getElementById('login-modal');
+  const $btnCloseLogin = document.getElementById('btn-close-login');
   const $adminEmail = document.getElementById('admin-email');
   const $adminPassword = document.getElementById('admin-password');
   const $adminError = document.getElementById('admin-error');
@@ -740,6 +743,19 @@
   }, { passive: true });
 
   // --- Admin ---
+  $adminLoginLink.addEventListener('click', function (e) {
+    e.preventDefault();
+    closeSidebar();
+    $adminEmail.value = '';
+    $adminPassword.value = '';
+    $adminError.classList.add('hidden');
+    $loginModal.classList.remove('hidden');
+  });
+
+  $btnCloseLogin.addEventListener('click', function () {
+    $loginModal.classList.add('hidden');
+  });
+
   $btnAdminLogin.addEventListener('click', async function () {
     $adminError.classList.add('hidden');
     var email = $adminEmail.value.trim();
@@ -757,17 +773,23 @@
     }
     currentUser = data.session.user;
     checkAdmin();
-    $adminPassword.value = '';
+    $loginModal.classList.add('hidden');
     renderShops(lastElements);
   });
 
-  $btnAdminLogout.addEventListener('click', async function () {
-    await sb.auth.signOut();
-    isAdmin = false;
-    currentUser = null;
-    updateAdminUI();
-    ensureAuth(); // re-create anonymous session
-    renderShops(lastElements);
+  $adminPassword.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') $btnAdminLogin.click();
+  });
+
+  $btnAdminLogout.addEventListener('click', function (e) {
+    e.preventDefault();
+    sb.auth.signOut().then(function () {
+      isAdmin = false;
+      currentUser = null;
+      updateAdminUI();
+      ensureAuth();
+      renderShops(lastElements);
+    });
   });
 
   $btnHidePlace.addEventListener('click', async function () {

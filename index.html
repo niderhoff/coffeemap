@@ -64,16 +64,14 @@
         <h3>About</h3>
         <p class="sidebar-about">Map data &copy; OpenStreetMap contributors. Coffee shop data from Overpass API. Prices submitted by users via Supabase.</p>
         <a href="https://buymeacoffee.com/niid" target="_blank" rel="noopener" class="bmc-link">Buy me a coffee</a>
-        <h3>Admin</h3>
-        <div id="admin-logged-out">
-          <input type="email" id="admin-email" placeholder="Email" autocomplete="email" />
-          <input type="password" id="admin-password" placeholder="Password" autocomplete="current-password" />
-          <button id="btn-admin-login">Log in</button>
-          <p id="admin-error" class="hidden"></p>
-        </div>
-        <div id="admin-logged-in" class="hidden">
-          <p id="admin-status"></p>
-          <button id="btn-admin-logout">Log out</button>
+        <div id="admin-section">
+          <div id="admin-logged-out">
+            <a href="#" id="admin-login-link" class="sidebar-link">Admin login</a>
+          </div>
+          <div id="admin-logged-in" class="hidden">
+            <p id="admin-status"></p>
+            <a href="#" id="btn-admin-logout" class="sidebar-link">Log out</a>
+          </div>
         </div>
       </div>
     </div>
@@ -131,6 +129,19 @@
         </div>
         <button id="btn-submit-price">Submit</button>
         <p id="price-error" class="hidden"></p>
+      </div>
+    </div>
+
+    <div id="login-modal" class="hidden">
+      <div id="login-modal-content">
+        <div id="login-modal-header">
+          <h3>Admin Login</h3>
+          <button id="btn-close-login" aria-label="Close">&times;</button>
+        </div>
+        <input type="email" id="admin-email" placeholder="Email" autocomplete="email" />
+        <input type="password" id="admin-password" placeholder="Password" autocomplete="current-password" />
+        <button id="btn-admin-login">Log in</button>
+        <p id="admin-error" class="hidden"></p>
       </div>
     </div>
 
