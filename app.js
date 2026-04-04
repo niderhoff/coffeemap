@@ -342,6 +342,40 @@
     currentOsmId = null;
   }
 
+  // --- Price helpers ---
+  function median(sorted) {
+    var n = sorted.length;
+    if (n === 0) return 0;
+    var mid = Math.floor(n / 2);
+    return n % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  function removeOutliers(values) {
+    if (values.length < 4) return values;
+    var sorted = values.slice().sort(function (a, b) { return a - b; });
+    var q1 = median(sorted.slice(0, Math.floor(sorted.length / 2)));
+    var q3 = median(sorted.slice(Math.ceil(sorted.length / 2)));
+    var iqr = q3 - q1;
+    var lower = q1 - 1.5 * iqr;
+    var upper = q3 + 1.5 * iqr;
+    return sorted.filter(function (v) { return v >= lower && v <= upper; });
+  }
+
+  function priceRowHtml(label, values) {
+    if (values.length === 0) return '';
+    var clean = removeOutliers(values);
+    if (clean.length === 0) clean = values; // fallback if all removed
+    var sorted = clean.slice().sort(function (a, b) { return a - b; });
+    var price = median(sorted);
+    var total = values.length;
+    var removed = total - clean.length;
+    var note = removed > 0 ? ', ' + removed + ' outlier' + (removed !== 1 ? 's' : '') + ' excluded' : '';
+    return '<div class="price-row">' +
+      '<span class="price-label">' + label + '</span>' +
+      '<span><span class="price-value">&euro;' + price.toFixed(2) + '</span>' +
+      '<span class="price-count">(' + total + ' report' + (total !== 1 ? 's' : '') + note + ')</span></span></div>';
+  }
+
   // --- Prices ---
   async function loadPrices(osmId) {
     if (!sb) {
@@ -364,27 +398,15 @@
 
     var showPlant = $prefPlantMilk.checked;
 
-    // Compute averages
-    var regPrices = data.filter(function (r) { return r.price_regular != null; });
-    var plantPrices = data.filter(function (r) { return r.price_plant_milk != null; });
+    // Use recent submissions, remove outliers via IQR, show median
+    var regValues = data.filter(function (r) { return r.price_regular != null; })
+                        .map(function (r) { return r.price_regular; });
+    var plantValues = data.filter(function (r) { return r.price_plant_milk != null; })
+                          .map(function (r) { return r.price_plant_milk; });
 
     var html = '';
-
-    if (regPrices.length > 0) {
-      var avg = regPrices.reduce(function (s, r) { return s + r.price_regular; }, 0) / regPrices.length;
-      html += '<div class="price-row">' +
-        '<span class="price-label">Regular milk</span>' +
-        '<span><span class="price-value">&euro;' + avg.toFixed(2) + '</span>' +
-        '<span class="price-count">(' + regPrices.length + ' report' + (regPrices.length !== 1 ? 's' : '') + ')</span></span></div>';
-    }
-
-    if (showPlant && plantPrices.length > 0) {
-      var avgPlant = plantPrices.reduce(function (s, r) { return s + r.price_plant_milk; }, 0) / plantPrices.length;
-      html += '<div class="price-row">' +
-        '<span class="price-label">Plant milk</span>' +
-        '<span><span class="price-value">&euro;' + avgPlant.toFixed(2) + '</span>' +
-        '<span class="price-count">(' + plantPrices.length + ' report' + (plantPrices.length !== 1 ? 's' : '') + ')</span></span></div>';
-    }
+    html += priceRowHtml('Regular milk', regValues);
+    if (showPlant) html += priceRowHtml('Plant milk', plantValues);
 
     if (!html) {
       html = '<p class="price-empty">No prices yet. Be the first to submit!</p>';
