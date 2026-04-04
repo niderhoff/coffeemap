@@ -624,15 +624,25 @@
     });
   });
 
-  // WiFi filter: just re-render locally, no new fetch needed
+  // WiFi filter: show/hide existing markers, no re-fetch
   $filterWifi.addEventListener('change', function () {
-    if (lastElements.length > 0) {
-      renderShops(lastElements);
-    } else {
-      // No cached data yet, need to fetch first
-      invalidateCache();
+    if (shopMarkers.length === 0 && lastElements.length === 0) {
       fetchCoffeeShops();
+      return;
     }
+    if (shopMarkers.length === 0) {
+      renderShops(lastElements);
+      return;
+    }
+    var wifiOn = $filterWifi.checked;
+    shopMarkers.forEach(function (m) {
+      var hasWifi = m._shopData.internet_access;
+      if (wifiOn && !hasWifi) {
+        m.getElement() && (m.getElement().style.display = 'none');
+      } else {
+        m.getElement() && (m.getElement().style.display = '');
+      }
+    });
   });
 
   // Plant milk pref: reload detail + map marker prices
