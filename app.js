@@ -6,23 +6,41 @@
   // --- Supabase ---
   var SUPABASE_URL = 'https://rosfemsvecvsszgkhjns.supabase.co';
   var SUPABASE_KEY = 'sb_publishable_ZpxXIsFgIvs5DbfFFt_7vQ_WyjWTRHZ';
-  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  var sb = null;
   var currentUser = null;
 
-  async function ensureAuth() {
-    if (currentUser) return currentUser;
-    var { data } = await sb.auth.getSession();
-    if (data.session) {
-      currentUser = data.session.user;
-      return currentUser;
+  try {
+    var createClient = (window.supabase && window.supabase.createClient) ||
+                       (window.Supabase && window.Supabase.createClient);
+    if (createClient) {
+      sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+    } else {
+      console.warn('Supabase SDK not loaded. Price features disabled.');
     }
-    var { data: signIn, error } = await sb.auth.signInAnonymously();
-    if (error) { console.error('Auth error:', error); return null; }
-    currentUser = signIn.session.user;
-    return currentUser;
+  } catch (e) {
+    console.warn('Supabase init failed:', e);
   }
 
-  ensureAuth();
+  async function ensureAuth() {
+    if (!sb) return null;
+    if (currentUser) return currentUser;
+    try {
+      var { data } = await sb.auth.getSession();
+      if (data.session) {
+        currentUser = data.session.user;
+        return currentUser;
+      }
+      var { data: signIn, error } = await sb.auth.signInAnonymously();
+      if (error) { console.error('Auth error:', error); return null; }
+      currentUser = signIn.session.user;
+      return currentUser;
+    } catch (e) {
+      console.error('Auth error:', e);
+      return null;
+    }
+  }
+
+  if (sb) ensureAuth();
 
   // --- State ---
   let map;
@@ -326,6 +344,10 @@
 
   // --- Prices ---
   async function loadPrices(osmId) {
+    if (!sb) {
+      $priceDisplay.innerHTML = '<p class="price-empty">Price database unavailable.</p>';
+      return;
+    }
     $priceDisplay.innerHTML = '<p class="price-empty">Loading prices...</p>';
 
     var { data, error } = await sb
