@@ -112,15 +112,11 @@
     const east = bounds.getEast().toFixed(6);
     const bbox = south + ',' + west + ',' + north + ',' + east;
 
-    // Build filter from checkboxes — use coffee-specific tags to avoid bars/ice cream
+    // Build filter from checkboxes — exclude obvious non-coffee places
     const filters = [];
     if ($filterCafe.checked) {
-      // Cafes that serve coffee: require cuisine=coffee or coffee-related name/tags
-      filters.push('node["amenity"="cafe"]["cuisine"~"coffee|coffee_shop"]('+bbox+');');
-      filters.push('way["amenity"="cafe"]["cuisine"~"coffee|coffee_shop"]('+bbox+');');
-      // Also grab cafes without a cuisine tag (likely coffee shops, not ice cream etc.)
-      filters.push('node["amenity"="cafe"][!"cuisine"]('+bbox+');');
-      filters.push('way["amenity"="cafe"][!"cuisine"]('+bbox+');');
+      filters.push('node["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
+      filters.push('way["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
     }
     if ($filterEspresso.checked) {
       filters.push('node["cuisine"~"coffee|coffee_shop"]('+bbox+');');
