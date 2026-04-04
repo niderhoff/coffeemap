@@ -274,10 +274,33 @@
 
     showLoading();
 
-    fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query), {
-      signal: searchAbort.signal,
-    })
-      .then(function (res) { return res.json(); })
+    var proxyUrl = SUPABASE_URL + '/functions/v1/overpass-proxy';
+    var directUrl = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+
+    // Try cached proxy first, fall back to direct Overpass
+    var fetchPromise;
+    if (sb) {
+      fetchPromise = fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY },
+        body: JSON.stringify({ query: query }),
+        signal: searchAbort.signal,
+      }).then(function (res) {
+        if (!res.ok) throw new Error('Proxy error ' + res.status);
+        return res.json();
+      }).catch(function (err) {
+        if (err.name === 'AbortError') throw err;
+        // Fallback to direct Overpass
+        console.warn('Proxy failed, falling back to direct:', err.message);
+        return fetch(directUrl, { signal: searchAbort.signal })
+          .then(function (res) { return res.json(); });
+      });
+    } else {
+      fetchPromise = fetch(directUrl, { signal: searchAbort.signal })
+        .then(function (res) { return res.json(); });
+    }
+
+    fetchPromise
       .then(function (data) {
         hideLoading();
         lastElements = data.elements || [];
