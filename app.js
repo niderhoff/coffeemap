@@ -27,6 +27,7 @@
   const $filterCafe = document.getElementById('filter-cafe');
   const $filterEspresso = document.getElementById('filter-espresso');
   const $filterRoastery = document.getElementById('filter-roastery');
+  const $filterWifi = document.getElementById('filter-wifi');
 
   // --- Coffee icon ---
   function createCoffeeIcon(active) {
@@ -113,18 +114,19 @@
     const bbox = south + ',' + west + ',' + north + ',' + east;
 
     // Build filter from checkboxes — exclude obvious non-coffee places
+    var wifi = $filterWifi.checked ? '["internet_access"~"wlan|yes"]' : '';
     const filters = [];
     if ($filterCafe.checked) {
-      filters.push('node["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
-      filters.push('way["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
+      filters.push('node["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]'+wifi+'('+bbox+');');
+      filters.push('way["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]'+wifi+'('+bbox+');');
     }
     if ($filterEspresso.checked) {
-      filters.push('node["cuisine"~"coffee|coffee_shop"]('+bbox+');');
-      filters.push('way["cuisine"~"coffee|coffee_shop"]('+bbox+');');
+      filters.push('node["cuisine"~"coffee|coffee_shop"]'+wifi+'('+bbox+');');
+      filters.push('way["cuisine"~"coffee|coffee_shop"]'+wifi+'('+bbox+');');
     }
     if ($filterRoastery.checked) {
-      filters.push('node["craft"="roastery"]('+bbox+');');
-      filters.push('way["craft"="roastery"]('+bbox+');');
+      filters.push('node["craft"="roastery"]'+wifi+'('+bbox+');');
+      filters.push('way["craft"="roastery"]'+wifi+'('+bbox+');');
     }
 
     if (filters.length === 0) {
@@ -206,6 +208,8 @@
     document.getElementById('detail-address').textContent = formatAddress(d);
     document.getElementById('detail-hours').textContent = d.opening_hours ? 'Hours: ' + d.opening_hours : '';
     document.getElementById('detail-phone').textContent = d.phone ? 'Phone: ' + d.phone : '';
+    document.getElementById('detail-wifi').textContent =
+      (d.internet_access === 'wlan' || d.internet_access === 'yes') ? 'WiFi: Yes' : '';
 
     const $website = document.getElementById('detail-website');
     if (d.website) {
@@ -312,7 +316,7 @@
   });
 
   // Filter changes trigger refetch
-  [$filterCafe, $filterEspresso, $filterRoastery].forEach(function (cb) {
+  [$filterCafe, $filterEspresso, $filterRoastery, $filterWifi].forEach(function (cb) {
     cb.addEventListener('change', fetchCoffeeShops);
   });
 
