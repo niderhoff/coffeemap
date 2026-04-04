@@ -104,48 +104,39 @@
     );
   }
 
-  // --- Query cache ---
-  // Keyed by query string, stores { elements, bounds, timestamp }
-  var queryCache = {};
-  var CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-  var CACHE_MAX = 50;
+  // --- Simple cache: skip fetch if viewport is still inside last fetched area ---
+  var lastFetchBounds = null;  // padded bounds of last successful fetch
+  var lastFilterKey = '';       // filter settings that produced lastFetchBounds
+  var CACHE_TTL = 5 * 60 * 1000;
+  var lastFetchTime = 0;
 
-  function getCacheKey(filters, wifi) {
-    return wifi + '|' + filters.sort().join('');
+  function getFilterKey() {
+    return ($filterCafe.checked ? 'c' : '') +
+           ($filterEspresso.checked ? 'e' : '') +
+           ($filterRoastery.checked ? 'r' : '') +
+           ($filterWifi.checked ? 'w' : '');
   }
 
-  function pruneCache() {
-    var keys = Object.keys(queryCache);
-    if (keys.length <= CACHE_MAX) return;
-    // Remove oldest entries
-    keys.sort(function (a, b) { return queryCache[a].timestamp - queryCache[b].timestamp; });
-    for (var i = 0; i < keys.length - CACHE_MAX; i++) {
-      delete queryCache[keys[i]];
-    }
-  }
-
-  // Check if current bounds are fully inside a cached entry's bounds
-  function findCacheHit(filterKey, bounds) {
-    var now = Date.now();
-    for (var key in queryCache) {
-      if (key.indexOf(filterKey) !== 0) continue;
-      var entry = queryCache[key];
-      if (now - entry.timestamp > CACHE_TTL) {
-        delete queryCache[key];
-        continue;
-      }
-      if (entry.bounds.contains(bounds)) {
-        return entry;
-      }
-    }
-    return null;
+  function invalidateCache() {
+    lastFetchBounds = null;
+    lastFilterKey = '';
   }
 
   // --- Overpass API: fetch coffee shops ---
   function fetchCoffeeShops() {
     const bounds = map.getBounds();
-    // Pad bounds by 20% so small pans don't trigger new requests
-    var padded = bounds.pad(0.2);
+    var filterKey = getFilterKey();
+
+    // Skip fetch if viewport is still within the last fetched (padded) area
+    // and filters haven't changed and cache hasn't expired
+    if (lastFetchBounds && filterKey === lastFilterKey &&
+        lastFetchBounds.contains(bounds) &&
+        Date.now() - lastFetchTime < CACHE_TTL) {
+      return;
+    }
+
+    // Pad bounds by 30% so small pans reuse this fetch
+    var padded = bounds.pad(0.3);
     const south = padded.getSouth().toFixed(6);
     const west = padded.getWest().toFixed(6);
     const north = padded.getNorth().toFixed(6);
@@ -170,18 +161,7 @@
 
     if (filters.length === 0) {
       clearMarkers();
-      return;
-    }
-
-    // Check cache — use filter key (without bbox) for matching
-    var filterKey = getCacheKey(filters.map(function (f) {
-      // Strip bbox to get a filter-only key
-      return f.replace(/\([^)]*\)/, '');
-    }), wifi);
-
-    var hit = findCacheHit(filterKey, bounds);
-    if (hit) {
-      renderShops(hit.elements);
+      invalidateCache();
       return;
     }
 
@@ -199,14 +179,9 @@
       .then(function (data) {
         hideLoading();
         var elements = data.elements || [];
-        // Store in cache
-        var cacheKey = filterKey + '|' + bbox;
-        queryCache[cacheKey] = {
-          elements: elements,
-          bounds: padded,
-          timestamp: Date.now(),
-        };
-        pruneCache();
+        lastFetchBounds = padded;
+        lastFilterKey = filterKey;
+        lastFetchTime = Date.now();
         renderShops(elements);
       })
       .catch(function (err) {
