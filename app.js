@@ -804,8 +804,13 @@
       return;
     }
     hiddenPlaces.add(currentOsmId);
+    // Remove the marker directly from the map
+    var osmId = currentOsmId;
+    if (activeMarker) {
+      map.removeLayer(activeMarker);
+      shopMarkers = shopMarkers.filter(function (m) { return m !== activeMarker; });
+    }
     closeDetail();
-    renderShops(lastElements);
   });
 
   // --- Start ---
