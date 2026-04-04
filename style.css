@@ -820,6 +820,11 @@ html, body {
   border-width: 3px;
 }
 
+.coffee-marker-muted {
+  background: #bbb;
+  opacity: 0.5;
+}
+
 /* User location pulse */
 .user-location {
   width: 16px;

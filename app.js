@@ -133,12 +133,13 @@
   const $adminError = document.getElementById('admin-error');
 
   // --- Coffee icon ---
-  function createCoffeeIcon(active, priceText) {
+  function createCoffeeIcon(active, priceText, muted) {
+    var cls = 'coffee-marker' + (active ? ' coffee-marker-active' : '') + (muted ? ' coffee-marker-muted' : '');
     var priceTag = priceText ? '<span class="marker-price">' + priceText + '</span>' : '';
     return L.divIcon({
       className: '',
       html: '<div class="coffee-marker-wrap">' +
-            '<div class="coffee-marker' + (active ? ' coffee-marker-active' : '') + '"><span>&#9749;</span></div>' +
+            '<div class="' + cls + '"><span>&#9749;</span></div>' +
             priceTag + '</div>',
       iconSize: active ? [38, 38] : [32, 32],
       iconAnchor: active ? [19, 38] : [16, 32],
@@ -303,7 +304,8 @@
     elements.forEach(function (el) {
       var tags = el.tags || {};
       var osmId = el.type + '/' + el.id;
-      if (hiddenPlaces.has(osmId) && !isAdmin) return;
+      var isHidden = hiddenPlaces.has(osmId);
+      if (isHidden && !isAdmin) return;
       if (wifiOnly && !tags.internet_access) return;
 
       const lat = el.lat || (el.center && el.center.lat);
@@ -314,7 +316,8 @@
       if (seen.has(key)) return;
       seen.add(key);
 
-      const marker = L.marker([lat, lon], { icon: createCoffeeIcon(false) }).addTo(map);
+      const marker = L.marker([lat, lon], { icon: createCoffeeIcon(false, null, isHidden) }).addTo(map);
+      marker._muted = isHidden;
       marker._shopData = el.tags || {};
       marker._shopData._lat = lat;
       marker._shopData._lon = lon;
@@ -377,7 +380,7 @@
       marker._priceText = text;
 
       var isActive = marker === activeMarker;
-      marker.setIcon(createCoffeeIcon(isActive, text));
+      marker.setIcon(createCoffeeIcon(isActive, text, marker._muted));
     });
   }
 
@@ -390,11 +393,11 @@
   // --- Select / detail ---
   function selectShop(marker) {
     if (activeMarker) {
-      activeMarker.setIcon(createCoffeeIcon(false, activeMarker._priceText));
+      activeMarker.setIcon(createCoffeeIcon(false, activeMarker._priceText, activeMarker._muted));
     }
 
     activeMarker = marker;
-    marker.setIcon(createCoffeeIcon(true, marker._priceText));
+    marker.setIcon(createCoffeeIcon(true, marker._priceText, marker._muted));
 
     const d = marker._shopData;
     currentOsmId = d._osmId;
@@ -450,7 +453,7 @@
   function closeDetail() {
     $detail.classList.add('hidden');
     if (activeMarker) {
-      activeMarker.setIcon(createCoffeeIcon(false, activeMarker._priceText));
+      activeMarker.setIcon(createCoffeeIcon(false, activeMarker._priceText, activeMarker._muted));
       activeMarker = null;
     }
     currentOsmId = null;
@@ -804,11 +807,10 @@
       return;
     }
     hiddenPlaces.add(currentOsmId);
-    // Remove the marker directly from the map
-    var osmId = currentOsmId;
+    // Mute the marker instead of removing it
     if (activeMarker) {
-      map.removeLayer(activeMarker);
-      shopMarkers = shopMarkers.filter(function (m) { return m !== activeMarker; });
+      activeMarker._muted = true;
+      activeMarker.setIcon(createCoffeeIcon(false, activeMarker._priceText, true));
     }
     closeDetail();
   });
