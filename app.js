@@ -940,14 +940,81 @@
     fetchMarkerPrices();
   }
 
-  // --- Search ---
-  function doSearch() {
-    const q = $searchInput.value.trim();
-    if (!q) return;
+  // --- Search with autocomplete ---
+  var $suggestions = document.getElementById('search-suggestions');
+  var searchTimer = null;
+  var searchAbort = null;
+  var selectedIdx = -1;
 
+  function typeIcon(type) {
+    if (type === 'city' || type === 'town' || type === 'village') return '🏙';
+    if (type === 'neighbourhood' || type === 'suburb') return '🏘';
+    if (type === 'road' || type === 'street') return '🛣';
+    if (type === 'country') return '🌍';
+    if (type === 'state' || type === 'county') return '📍';
+    return '📍';
+  }
+
+  function showSuggestions(results) {
+    if (results.length === 0) {
+      $suggestions.classList.remove('open');
+      return;
+    }
+    selectedIdx = -1;
+    $suggestions.innerHTML = results.map(function (r, i) {
+      var parts = r.display_name.split(', ');
+      var name = parts[0];
+      var detail = parts.slice(1, 3).join(', ');
+      return '<li data-idx="' + i + '">' +
+        '<span class="suggestion-icon">' + typeIcon(r.type) + '</span>' +
+        '<span class="suggestion-text">' +
+          '<span class="suggestion-name">' + escapeHtml(name) + '</span>' +
+          '<span class="suggestion-detail">' + escapeHtml(detail) + '</span>' +
+        '</span></li>';
+    }).join('');
+    $suggestions._results = results;
+    $suggestions.classList.add('open');
+  }
+
+  function hideSuggestions() {
+    $suggestions.classList.remove('open');
+    selectedIdx = -1;
+  }
+
+  function selectSuggestion(r) {
+    $searchInput.value = r.display_name.split(', ')[0];
+    hideSuggestions();
     $searchInput.blur();
+    invalidateCache(true);
+    var zoom = 15;
+    if (r.type === 'country') zoom = 6;
+    else if (r.type === 'state') zoom = 8;
+    else if (r.type === 'city' || r.type === 'town') zoom = 13;
+    else if (r.type === 'suburb' || r.type === 'neighbourhood') zoom = 15;
+    map.flyTo([parseFloat(r.lat), parseFloat(r.lon)], zoom, { duration: 1 });
+  }
 
+  function fetchSuggestions(q) {
+    if (searchAbort) searchAbort.abort();
+    searchAbort = new AbortController();
+    fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(q) + '&limit=5&addressdetails=0', {
+      headers: { 'Accept-Language': 'en' },
+      signal: searchAbort.signal,
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (results) { showSuggestions(results); })
+      .catch(function (err) {
+        if (err.name !== 'AbortError') console.error('Search error:', err);
+      });
+  }
+
+  function doSearch() {
+    var q = $searchInput.value.trim();
+    if (!q) return;
+    hideSuggestions();
+    $searchInput.blur();
     showLoading();
+    if (searchAbort) searchAbort.abort();
     fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(q) + '&limit=1', {
       headers: { 'Accept-Language': 'en' },
     })
@@ -955,14 +1022,12 @@
       .then(function (results) {
         hideLoading();
         if (results.length > 0) {
-          const r = results[0];
+          var r = results[0];
           invalidateCache(true);
           map.flyTo([parseFloat(r.lat), parseFloat(r.lon)], 15, { duration: 1 });
         }
       })
-      .catch(function () {
-        hideLoading();
-      });
+      .catch(function () { hideLoading(); });
   }
 
   // --- Sidebar ---
@@ -1007,8 +1072,43 @@
   $btnLocate.addEventListener('click', function () { locateUser(false); });
   $btnCloseDetail.addEventListener('click', closeDetail);
   $btnSearch.addEventListener('click', doSearch);
+  $searchInput.addEventListener('input', function () {
+    var q = $searchInput.value.trim();
+    clearTimeout(searchTimer);
+    if (q.length < 2) { hideSuggestions(); return; }
+    searchTimer = setTimeout(function () { fetchSuggestions(q); }, 300);
+  });
   $searchInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') doSearch();
+    var items = $suggestions.querySelectorAll('li');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectedIdx = Math.min(selectedIdx + 1, items.length - 1);
+      items.forEach(function (li, i) { li.classList.toggle('selected', i === selectedIdx); });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectedIdx = Math.max(selectedIdx - 1, 0);
+      items.forEach(function (li, i) { li.classList.toggle('selected', i === selectedIdx); });
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (selectedIdx >= 0 && $suggestions._results) {
+        selectSuggestion($suggestions._results[selectedIdx]);
+      } else {
+        doSearch();
+      }
+    } else if (e.key === 'Escape') {
+      hideSuggestions();
+    }
+  });
+  $searchInput.addEventListener('focus', function () {
+    if ($suggestions.children.length > 0) $suggestions.classList.add('open');
+  });
+  $suggestions.addEventListener('click', function (e) {
+    var li = e.target.closest('li');
+    if (!li || !$suggestions._results) return;
+    selectSuggestion($suggestions._results[parseInt(li.dataset.idx)]);
+  });
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest('#search-bar')) hideSuggestions();
   });
 
   $btnDirections.addEventListener('click', function () {

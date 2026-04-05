@@ -89,6 +89,75 @@ html, body {
   color: var(--coffee-light);
 }
 
+#search-suggestions {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  background: white;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 1001;
+}
+
+#search-suggestions.open {
+  display: block;
+}
+
+#search-suggestions li {
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--coffee-dark);
+  cursor: pointer;
+  border-bottom: 1px solid #f0ebe4;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+#search-suggestions li:last-child {
+  border-bottom: none;
+}
+
+#search-suggestions li:active,
+#search-suggestions li.selected {
+  background: var(--cream);
+}
+
+.suggestion-icon {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  margin-top: 1px;
+  opacity: 0.5;
+}
+
+.suggestion-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.suggestion-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggestion-detail {
+  font-size: 12px;
+  color: var(--coffee-light);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Quick filter pills */
 #quick-filters {
   position: absolute;
