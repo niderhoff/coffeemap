@@ -217,12 +217,14 @@
 
   var CELL_SIZE = 0.005;      // ~500m grid
   var CELL_TTL = 60 * 60 * 1000; // 1 hour
-  var MAX_CONCURRENT = 3;
-  var REQUEST_GAP = 300;      // ms between starting new requests (cache HITs are instant)
-  var RETRY_COOLDOWN = 20000; // 20s before retrying a failed cell
+  var MAX_CONCURRENT = 2;
+  var BASE_GAP = 300;         // ms between requests when things are healthy
+  var currentGap = BASE_GAP;  // adaptive: increases on errors, decreases on success
+  var RETRY_COOLDOWN = 30000; // 30s before retrying a failed cell
   var MAX_RETRY = 3;
   var PREFETCH_RINGS = 3;     // rings of cells beyond viewport to enqueue
   var MAX_ELEMENTS = 3000;
+  var consecutiveErrors = 0;
 
   // Cell states: 'fetched' | 'pending' | 'failed'
   // Cells not in the map are unfetched
@@ -424,21 +426,26 @@
           mergeElements(data.elements);
           renderShops(lastElements);
         }
+        // Success: reduce gap back towards base
+        consecutiveErrors = 0;
+        currentGap = BASE_GAP;
       })
       .catch(function (err) {
         console.error('Cell fetch error (' + id + '):', err.message);
         cellStates[id] = { state: 'failed', filterKey: filterKey, zoom: zoom, time: Date.now(), attempts: attempts + 1 };
+        // Error: exponential backoff — double the gap, cap at 15s
+        consecutiveErrors++;
+        currentGap = Math.min(BASE_GAP * Math.pow(2, consecutiveErrors), 15000);
+        console.log('Backing off: next request in ' + currentGap + 'ms');
       })
       .then(function () {
         activeRequests--;
-        // Update loading state
         if (viewportFullyCovered(filterKey, zoom)) hideLoading();
-        // Continue worker after gap
-        workerTimer = setTimeout(runWorkerStep, REQUEST_GAP);
+        workerTimer = setTimeout(runWorkerStep, currentGap);
       });
 
-    // If we can run more concurrent requests, schedule another step immediately
-    if (activeRequests < MAX_CONCURRENT && needed.length > 1) {
+    // If we can run more concurrent, only do so when healthy (no recent errors)
+    if (activeRequests < MAX_CONCURRENT && needed.length > 1 && consecutiveErrors === 0) {
       setTimeout(runWorkerStep, 50);
     }
   }
