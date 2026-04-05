@@ -302,7 +302,7 @@
     var filterKey = getFilterKey();
     var zoom = map.getZoom();
     var bounds = map.getBounds();
-    var padded = bounds.pad(0.3);
+    var padded = bounds.pad(0.1);
 
     // Demote any old viewport regions to background
     regionQueue.forEach(function (r) { r.isViewport = false; });
@@ -521,7 +521,7 @@
       filters.push('way["craft"="roastery"]('+bbox+');');
     }
     if (filters.length === 0) return null;
-    return '[out:json][timeout:15];(' + filters.join('') + ');out center;';
+    return '[out:json][timeout:10];(' + filters.join('') + ');out center 300;';
   }
 
   // Snap bbox to QUERY_GRID so small pans/GPS drift don't change cache keys
@@ -539,9 +539,9 @@
   }
 
   function fireQuery(query, signal) {
-    // Debug: log the exact query bbox being sent
-    var bboxMatch = query.match(/\(([^)]+)\)/);
-    if (bboxMatch) console.log('Query bbox:', bboxMatch[1].substring(0, 60));
+    // Debug: log the bbox coordinates
+    var bboxMatch = query.match(/(\d+\.\d+,\d+\.\d+,\d+\.\d+,\d+\.\d+)/);
+    if (bboxMatch) console.log('Query bbox:', bboxMatch[1]);
 
     var proxyUrl = SUPABASE_URL + '/functions/v1/overpass-proxy';
     return fetch(proxyUrl, {
