@@ -54,11 +54,15 @@ Deno.serve(async (req) => {
     );
 
     // Check cache
-    const { data: cached } = await sb
+    const { data: cached, error: cacheError } = await sb
       .from("overpass_cache")
       .select("response, created_at")
       .eq("query_hash", cacheKey)
       .maybeSingle();
+
+    if (cacheError) {
+      console.error("Cache read failed:", JSON.stringify(cacheError));
+    }
 
     if (cached) {
       const age = Date.now() - new Date(cached.created_at).getTime();
@@ -88,11 +92,17 @@ Deno.serve(async (req) => {
     const data = await res.json();
 
     // Store in cache (upsert)
-    await sb.from("overpass_cache").upsert({
-      query_hash: cacheKey,
-      response: data,
-      created_at: new Date().toISOString(),
-    });
+    const { error: upsertError } = await sb.from("overpass_cache").upsert(
+      {
+        query_hash: cacheKey,
+        response: data,
+        created_at: new Date().toISOString(),
+      },
+      { onConflict: "query_hash" }
+    );
+    if (upsertError) {
+      console.error("Cache upsert failed:", JSON.stringify(upsertError));
+    }
 
     return new Response(JSON.stringify(data), {
       headers: {

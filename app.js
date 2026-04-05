@@ -286,7 +286,7 @@
     if (sb) {
       return fetch(proxyUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY },
+        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
         body: JSON.stringify({ query: query }),
         signal: signal,
       }).then(function (res) {
