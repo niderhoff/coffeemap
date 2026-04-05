@@ -234,7 +234,9 @@
   var activeRequest = false;
   var workerTimer = null;
   var retryWakeTimer = null;
+  var missDelayTimer = null;
   var consecutiveErrors = 0;
+  var abortCtrl = null;    // AbortController for cancelling in-flight misses
 
   function getFilterKey() {
     return ($filterCafe.checked ? 'c' : '') +
@@ -358,10 +360,14 @@
     });
   }
 
-  // --- Worker: batch-fetches all regions in one streaming request ---
+  // --- Worker: batch cache lookup + cancellable miss fetching ---
   function wakeWorker() {
     clearTimeout(workerTimer);
     clearTimeout(retryWakeTimer);
+    clearTimeout(missDelayTimer);
+    // Cancel any in-flight miss requests so we can re-prioritize
+    if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+    activeRequest = false;
     buildRegionQueue();
     runBatch();
   }
@@ -390,10 +396,10 @@
     }
 
     // Sort: viewport first, then by distance from center
+    var center = map.getCenter();
     toFetch.sort(function (a, b) {
       var ra = regionMap[a.id], rb = regionMap[b.id];
       if (ra.isViewport !== rb.isViewport) return ra.isViewport ? -1 : 1;
-      var center = map.getCenter();
       var ac = ra.bounds.getCenter(), bc = rb.bounds.getCenter();
       var da = (ac.lat - center.lat) * (ac.lat - center.lat) + (ac.lng - center.lng) * (ac.lng - center.lng);
       var db = (bc.lat - center.lat) * (bc.lat - center.lat) + (bc.lng - center.lng) * (bc.lng - center.lng);
@@ -402,6 +408,8 @@
 
     showLoading();
     activeRequest = true;
+    abortCtrl = new AbortController();
+    var signal = abortCtrl.signal;
     console.log('Batch lookup:', toFetch.length, 'regions');
 
     // Phase 1: batch cache lookup (instant — no Overpass calls)
@@ -410,6 +418,7 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
       body: JSON.stringify({ queries: toFetch }),
+      signal: signal,
     }).then(function (res) {
       if (!res.ok) throw new Error('Batch proxy error ' + res.status);
       return res.json();
@@ -420,7 +429,6 @@
         var region = regionMap[hit.id];
         if (!region) return;
         hitCount++;
-        console.log('HIT:', hit.id, 'age=' + hit.age + 's');
         if (hit.data && hit.data.elements && hit.data.elements.length > 0) {
           mergeElements(hit.data.elements);
           renderShops(lastElements);
@@ -432,25 +440,26 @@
       if (hitCount > 0) hideLoading();
       console.log('Cache:', hitCount, 'hits,', (batch.misses || []).length, 'misses');
 
-      // Phase 2: fetch misses individually, viewport-first order preserved
+      // Phase 2: fetch misses one at a time, cancellable between requests
       var misses = batch.misses || [];
-      // Sort misses: viewport first, then by distance
       misses.sort(function (a, b) {
         var ra = regionMap[a.id], rb = regionMap[b.id];
         if (!ra || !rb) return 0;
         if (ra.isViewport !== rb.isViewport) return ra.isViewport ? -1 : 1;
-        var center = map.getCenter();
         var ac = ra.bounds.getCenter(), bc = rb.bounds.getCenter();
         var da = (ac.lat - center.lat) * (ac.lat - center.lat) + (ac.lng - center.lng) * (ac.lng - center.lng);
         var db = (bc.lat - center.lat) * (bc.lat - center.lat) + (bc.lng - center.lng) * (bc.lng - center.lng);
         return da - db;
       });
-      return fetchMissesSequentially(misses, regionMap);
+      return fetchMissesSequentially(misses, regionMap, signal);
     }).catch(function (err) {
+      if (err.name === 'AbortError') return;
       console.error('Batch error:', err.message);
       consecutiveErrors++;
     }).then(function () {
+      if (signal.aborted) return;
       activeRequest = false;
+      abortCtrl = null;
       hideLoading();
       if (regionQueue.length > 0) {
         var gap = consecutiveErrors > 0
@@ -461,17 +470,16 @@
     });
   }
 
-  // Fetch cache misses one at a time using the single-query endpoint
-  function fetchMissesSequentially(misses, regionMap) {
-    if (misses.length === 0) return Promise.resolve();
+  // Fetch cache misses one at a time — aborts cleanly when signal fires
+  function fetchMissesSequentially(misses, regionMap, signal) {
+    if (misses.length === 0 || signal.aborted) return Promise.resolve();
     var item = misses[0];
     var region = regionMap[item.id];
-    if (!region) return fetchMissesSequentially(misses.slice(1), regionMap);
+    if (!region) return fetchMissesSequentially(misses.slice(1), regionMap, signal);
 
     if (region.isViewport) showLoading();
-    console.log('Fetching MISS:', item.id);
 
-    return fireQuery(item.query).then(function (data) {
+    return fireQuery(item.query, signal).then(function (data) {
       if (data && data.elements && data.elements.length > 0) {
         mergeElements(data.elements);
         renderShops(lastElements);
@@ -482,6 +490,7 @@
       consecutiveErrors = 0;
       if (region.isViewport) hideLoading();
     }).catch(function (err) {
+      if (err.name === 'AbortError') return;
       console.error('Miss fetch error:', item.id, err.message);
       region.attempts++;
       region.failTime = Date.now();
@@ -491,10 +500,14 @@
       }
       if (region.isViewport) hideLoading();
     }).then(function () {
+      if (signal.aborted) return;
       // Small delay between Overpass requests to avoid 429 rate limiting
-      return new Promise(function (resolve) { setTimeout(resolve, 1500); });
+      return new Promise(function (resolve) {
+        missDelayTimer = setTimeout(resolve, 1500);
+      });
     }).then(function () {
-      return fetchMissesSequentially(misses.slice(1), regionMap);
+      if (signal.aborted) return;
+      return fetchMissesSequentially(misses.slice(1), regionMap, signal);
     });
   }
 
@@ -514,6 +527,8 @@
     regionQueue = [];
     clearTimeout(workerTimer);
     clearTimeout(retryWakeTimer);
+    clearTimeout(missDelayTimer);
+    if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
     activeRequest = false;
     consecutiveErrors = 0;
     try { localStorage.removeItem('cm_cells'); } catch (e) {}
