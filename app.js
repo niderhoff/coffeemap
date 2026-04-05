@@ -224,7 +224,10 @@
   function invalidateCache(clearData) {
     lastFetchCenter = null;
     lastFilterKey = '';
-    if (clearData) clearElements();
+    if (clearData) {
+      clearElements();
+      clearMarkers();
+    }
   }
 
   // Merge new elements into lastElements, deduped by OSM type+id
@@ -382,48 +385,70 @@
 
       // Stagger requests to avoid hammering Overpass
       setTimeout(function () {
-        fireQuery(query).catch(function () {}); // Fire-and-forget
+        fireQuery(query)
+          .then(function (data) {
+            if (data && data.elements && data.elements.length > 0) {
+              mergeElements(data.elements);
+              renderShops(lastElements);
+            }
+          })
+          .catch(function () {}); // Ignore prefetch errors
       }, i * 1500);
     });
   }
 
-  // --- Render shop markers ---
+  // --- Render shop markers (incremental — never destroys existing markers) ---
+  var markerIndex = {}; // osmId -> marker
+
   function renderShops(elements) {
-    clearMarkers();
-    const seen = new Set();
     var wifiOnly = $filterWifi.checked;
+    var hadNew = false;
 
     elements.forEach(function (el) {
       var tags = el.tags || {};
       var osmId = el.type + '/' + el.id;
       var isHidden = hiddenPlaces.has(osmId);
       if (isHidden && !isAdmin) return;
-      if (wifiOnly && !tags.internet_access) return;
 
-      const lat = el.lat || (el.center && el.center.lat);
-      const lon = el.lon || (el.center && el.center.lon);
+      if (markerIndex[osmId]) {
+        // Already on map — just update WiFi visibility
+        if (wifiOnly && !tags.internet_access) {
+          var el2 = markerIndex[osmId].getElement();
+          if (el2) el2.style.display = 'none';
+        }
+        return;
+      }
+
+      var lat = el.lat || (el.center && el.center.lat);
+      var lon = el.lon || (el.center && el.center.lon);
       if (!lat || !lon) return;
 
-      const key = lat.toFixed(5) + ',' + lon.toFixed(5);
-      if (seen.has(key)) return;
-      seen.add(key);
-
-      const marker = L.marker([lat, lon], { icon: createCoffeeIcon(false, null, isHidden) }).addTo(map);
+      var marker = L.marker([lat, lon], { icon: createCoffeeIcon(false, null, isHidden) }).addTo(map);
       marker._muted = isHidden;
-      marker._shopData = el.tags || {};
+      marker._shopData = tags;
       marker._shopData._lat = lat;
       marker._shopData._lon = lon;
-      marker._shopData._osmId = el.type + '/' + el.id;
+      marker._shopData._osmId = osmId;
 
       marker.on('click', function (e) {
         L.DomEvent.stopPropagation(e);
         selectShop(marker);
       });
 
+      // Apply WiFi filter on new markers
+      if (wifiOnly && !tags.internet_access) {
+        setTimeout(function () {
+          var el2 = marker.getElement();
+          if (el2) el2.style.display = 'none';
+        }, 0);
+      }
+
       shopMarkers.push(marker);
+      markerIndex[osmId] = marker;
+      hadNew = true;
     });
 
-    fetchMarkerPrices();
+    if (hadNew) fetchMarkerPrices();
   }
 
   // Batch-fetch prices for all visible markers and add price badges
@@ -479,6 +504,7 @@
   function clearMarkers() {
     shopMarkers.forEach(function (m) { map.removeLayer(m); });
     shopMarkers = [];
+    markerIndex = {};
     activeMarker = null;
   }
 
@@ -869,6 +895,7 @@
     currentUser = data.session.user;
     checkAdmin();
     $loginModal.classList.add('hidden');
+    clearMarkers();
     renderShops(lastElements);
   });
 
@@ -883,6 +910,7 @@
       currentUser = null;
       updateAdminUI();
       ensureAuth();
+      clearMarkers();
       renderShops(lastElements);
     });
   });
