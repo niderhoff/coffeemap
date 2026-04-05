@@ -16,12 +16,12 @@ async function hashQuery(query: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Round bbox values to ~0.01 degree grid (~1km) so nearby requests share cache
+// Round bbox values to ~0.005 degree grid (~500m) so nearby requests share cache
 function normalizeBbox(query: string): string {
   return query.replace(
     /(-?\d+\.\d+),(-?\d+\.\d+),(-?\d+\.\d+),(-?\d+\.\d+)/g,
     (_match, s, w, n, e) => {
-      const round = (v: string) => (Math.round(parseFloat(v) * 100) / 100).toFixed(2);
+      const round = (v: string) => (Math.round(parseFloat(v) * 200) / 200).toFixed(3);
       return `${round(s)},${round(w)},${round(n)},${round(e)}`;
     }
   );

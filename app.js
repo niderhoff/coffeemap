@@ -215,7 +215,7 @@
   // pans, the queue dynamically reorders so nearby cells always come first.
   // =========================================================================
 
-  var CELL_SIZE = 0.01;       // ~1km grid
+  var CELL_SIZE = 0.005;      // ~500m grid
   var CELL_TTL = 60 * 60 * 1000; // 1 hour
   var MAX_CONCURRENT = 2;
   var REQUEST_GAP = 1000;     // ms between starting new requests
@@ -502,7 +502,7 @@
       filters.push('way["craft"="roastery"]('+bbox+');');
     }
     if (filters.length === 0) return null;
-    return '[out:json][timeout:15];(' + filters.join('') + ');out center 80;';
+    return '[out:json][timeout:25];(' + filters.join('') + ');out center;';
   }
 
   function bboxString(bounds) {
