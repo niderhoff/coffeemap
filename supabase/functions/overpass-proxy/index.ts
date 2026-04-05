@@ -1,6 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
