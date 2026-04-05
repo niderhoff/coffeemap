@@ -122,6 +122,7 @@
   const $pillWifi = document.getElementById('pill-wifi');
   const $pillPlant = document.getElementById('pill-plant');
   const $btnHidePlace = document.getElementById('btn-hide-place');
+  const $btnResetPrices = document.getElementById('btn-reset-prices');
   const $btnAdminLogin = document.getElementById('btn-admin-login');
   const $btnAdminLogout = document.getElementById('btn-admin-logout');
   const $adminLoginLink = document.getElementById('admin-login-link');
@@ -686,6 +687,7 @@
         .from('prices')
         .select('osm_id, price_regular, price_plant_milk, created_at')
         .in('osm_id', chunk)
+        .neq('archived', true)
         .order('created_at', { ascending: false });
       if (!error && data) allData = allData.concat(data);
     }
@@ -773,6 +775,7 @@
     $btnDirections._lon = d._lon;
 
     $btnHidePlace.classList.toggle('hidden', !isAdmin);
+    $btnResetPrices.classList.toggle('hidden', !isAdmin);
     $detail.classList.remove('hidden');
     loadPrices(currentOsmId);
   }
@@ -846,6 +849,7 @@
       .from('prices')
       .select('price_regular, price_plant_milk, created_at')
       .eq('osm_id', osmId)
+      .neq('archived', true)
       .order('created_at', { ascending: false })
       .limit(50);
 
@@ -1134,6 +1138,24 @@
       clearMarkers();
       renderShops(lastElements);
     });
+  });
+
+  $btnResetPrices.addEventListener('click', async function () {
+    if (!isAdmin || !currentOsmId) return;
+    if (!confirm('Archive all prices for this shop?')) return;
+    var { error } = await sb.from('prices')
+      .update({ archived: true })
+      .eq('osm_id', currentOsmId);
+    if (error) {
+      console.error('Reset prices error:', error);
+      return;
+    }
+    // Clear the price badge on the marker
+    if (activeMarker) {
+      activeMarker._priceText = null;
+      activeMarker.setIcon(createCoffeeIcon(true, null, activeMarker._muted));
+    }
+    loadPrices(currentOsmId);
   });
 
   $btnHidePlace.addEventListener('click', async function () {

@@ -424,6 +424,27 @@ html, body {
   background: #962d22;
 }
 
+#btn-reset-prices {
+  width: 100%;
+  padding: 10px;
+  margin-top: 6px;
+  background: #e67e22;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#btn-reset-prices.hidden {
+  display: none;
+}
+
+#btn-reset-prices:active {
+  background: #d35400;
+}
+
 /* Shop detail panel */
 #shop-detail {
   position: absolute;
