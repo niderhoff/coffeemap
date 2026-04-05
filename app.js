@@ -367,10 +367,7 @@
   function runBatch() {
     if (activeRequest) return;
 
-    var filterKey = getFilterKey();
-    var zoom = map.getZoom();
-
-    // Collect all regions — cache hits are free in batch mode
+    // Collect all regions
     var toFetch = [];
     var regionMap = {}; // id -> region
     for (var i = 0; i < regionQueue.length; i++) {
@@ -378,9 +375,8 @@
       var bbox = bboxString(r.bounds);
       var query = buildQuery(bbox);
       if (!query) { regionQueue.splice(i, 1); i--; continue; }
-      var id = bbox;
-      toFetch.push({ id: id, query: query });
-      regionMap[id] = r;
+      toFetch.push({ id: bbox, query: query });
+      regionMap[bbox] = r;
     }
 
     if (toFetch.length === 0) {
@@ -388,7 +384,7 @@
       return;
     }
 
-    // Sort: viewport first
+    // Sort: viewport first, then by distance from center
     toFetch.sort(function (a, b) {
       var ra = regionMap[a.id], rb = regionMap[b.id];
       if (ra.isViewport !== rb.isViewport) return ra.isViewport ? -1 : 1;
@@ -401,82 +397,96 @@
 
     showLoading();
     activeRequest = true;
-    console.log('Batch fetch:', toFetch.length, 'regions');
+    console.log('Batch lookup:', toFetch.length, 'regions');
 
+    // Phase 1: batch cache lookup (instant — no Overpass calls)
     var proxyUrl = SUPABASE_URL + '/functions/v1/overpass-proxy';
     fetch(proxyUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
       body: JSON.stringify({ queries: toFetch }),
     }).then(function (res) {
-      if (!res.ok) {
-        throw new Error('Batch proxy error ' + res.status);
-      }
-      var reader = res.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = '';
+      if (!res.ok) throw new Error('Batch proxy error ' + res.status);
+      return res.json();
+    }).then(function (batch) {
+      // Render all cache hits immediately
+      var hitCount = 0;
+      (batch.hits || []).forEach(function (hit) {
+        var region = regionMap[hit.id];
+        if (!region) return;
+        hitCount++;
+        console.log('HIT:', hit.id, 'age=' + hit.age + 's');
+        if (hit.data && hit.data.elements && hit.data.elements.length > 0) {
+          mergeElements(hit.data.elements);
+          renderShops(lastElements);
+        }
+        markCellsFetched(region.bounds, region.filterKey, region.zoom);
+        var idx = regionQueue.indexOf(region);
+        if (idx >= 0) regionQueue.splice(idx, 1);
+      });
+      if (hitCount > 0) hideLoading();
+      console.log('Cache:', hitCount, 'hits,', (batch.misses || []).length, 'misses');
 
-      function processLines() {
-        var lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        lines.forEach(function (line) {
-          if (!line.trim()) return;
-          try {
-            var result = JSON.parse(line);
-            var region = regionMap[result.id];
-            if (!region) return;
-            console.log('Stream:', result.id, 'cache=' + result.cache, result.error || '');
-            if (result.data && result.data.elements && result.data.elements.length > 0) {
-              mergeElements(result.data.elements);
-              renderShops(lastElements);
-              markCellsFetched(region.bounds, region.filterKey, region.zoom);
-              var idx = regionQueue.indexOf(region);
-              if (idx >= 0) regionQueue.splice(idx, 1);
-            } else if (result.error) {
-              region.attempts++;
-              region.failTime = Date.now();
-              if (!region.isViewport && region.attempts >= MAX_RETRY) {
-                var idx = regionQueue.indexOf(region);
-                if (idx >= 0) regionQueue.splice(idx, 1);
-              }
-            } else {
-              // Success but no elements
-              markCellsFetched(region.bounds, region.filterKey, region.zoom);
-              var idx = regionQueue.indexOf(region);
-              if (idx >= 0) regionQueue.splice(idx, 1);
-            }
-          } catch (e) {
-            console.error('Stream parse error:', e);
-          }
-        });
-      }
-
-      function pump() {
-        return reader.read().then(function (result) {
-          if (result.done) {
-            if (buffer.trim()) processLines();
-            return;
-          }
-          buffer += decoder.decode(result.value, { stream: true });
-          processLines();
-          return pump();
-        });
-      }
-
-      return pump();
+      // Phase 2: fetch misses individually, viewport-first order preserved
+      var misses = batch.misses || [];
+      // Sort misses: viewport first, then by distance
+      misses.sort(function (a, b) {
+        var ra = regionMap[a.id], rb = regionMap[b.id];
+        if (!ra || !rb) return 0;
+        if (ra.isViewport !== rb.isViewport) return ra.isViewport ? -1 : 1;
+        var center = map.getCenter();
+        var ac = ra.bounds.getCenter(), bc = rb.bounds.getCenter();
+        var da = (ac.lat - center.lat) * (ac.lat - center.lat) + (ac.lng - center.lng) * (ac.lng - center.lng);
+        var db = (bc.lat - center.lat) * (bc.lat - center.lat) + (bc.lng - center.lng) * (bc.lng - center.lng);
+        return da - db;
+      });
+      return fetchMissesSequentially(misses, regionMap);
     }).catch(function (err) {
-      console.error('Batch fetch error:', err.message);
+      console.error('Batch error:', err.message);
       consecutiveErrors++;
     }).then(function () {
       activeRequest = false;
       hideLoading();
-      // Retry remaining regions after a delay if any are left
       if (regionQueue.length > 0) {
         var gap = consecutiveErrors > 0
           ? Math.min(5000 * Math.pow(2, consecutiveErrors - 1), 30000)
           : 3000;
         workerTimer = setTimeout(function () { consecutiveErrors = 0; runBatch(); }, gap);
       }
+    });
+  }
+
+  // Fetch cache misses one at a time using the single-query endpoint
+  function fetchMissesSequentially(misses, regionMap) {
+    if (misses.length === 0) return Promise.resolve();
+    var item = misses[0];
+    var region = regionMap[item.id];
+    if (!region) return fetchMissesSequentially(misses.slice(1), regionMap);
+
+    if (region.isViewport) showLoading();
+    console.log('Fetching MISS:', item.id);
+
+    return fireQuery(item.query).then(function (data) {
+      if (data && data.elements && data.elements.length > 0) {
+        mergeElements(data.elements);
+        renderShops(lastElements);
+      }
+      markCellsFetched(region.bounds, region.filterKey, region.zoom);
+      var idx = regionQueue.indexOf(region);
+      if (idx >= 0) regionQueue.splice(idx, 1);
+      consecutiveErrors = 0;
+      if (region.isViewport) hideLoading();
+    }).catch(function (err) {
+      console.error('Miss fetch error:', item.id, err.message);
+      region.attempts++;
+      region.failTime = Date.now();
+      if (!region.isViewport && region.attempts >= MAX_RETRY) {
+        var idx = regionQueue.indexOf(region);
+        if (idx >= 0) regionQueue.splice(idx, 1);
+      }
+      if (region.isViewport) hideLoading();
+    }).then(function () {
+      return fetchMissesSequentially(misses.slice(1), regionMap);
     });
   }
 

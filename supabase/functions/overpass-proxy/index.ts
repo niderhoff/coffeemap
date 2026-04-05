@@ -121,74 +121,25 @@ async function handleBatch(queries: { id: string; query: string }[]) {
     }
   }
 
-  // Stream NDJSON: all cache hits first (instant), then misses sequentially
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      const misses: typeof items = [];
+  // Return cache hits + list of miss IDs (no Overpass fetching here).
+  // Client fetches misses individually so each gets its own timeout budget.
+  const hits: { id: string; cache: string; age: number; data: unknown }[] = [];
+  const misses: { id: string; query: string }[] = [];
 
-      // Phase 1: emit all cache hits immediately
-      for (const item of items) {
-        const cached = cacheMap.get(item.cacheKey);
-        if (cached) {
-          const age = Math.round((Date.now() - new Date(cached.created_at).getTime()) / 1000);
-          const line = JSON.stringify({
-            id: item.id,
-            cache: "HIT",
-            age,
-            data: cached.response,
-          }) + "\n";
-          controller.enqueue(encoder.encode(line));
-        } else {
-          misses.push(item);
-        }
-      }
+  for (const item of items) {
+    const cached = cacheMap.get(item.cacheKey);
+    if (cached) {
+      const age = Math.round((Date.now() - new Date(cached.created_at).getTime()) / 1000);
+      hits.push({ id: item.id, cache: "HIT", age, data: cached.response });
+    } else {
+      misses.push({ id: item.id, query: item.query });
+    }
+  }
 
-      // Phase 2: fetch misses from Overpass sequentially
-      for (const item of misses) {
-        const result = await fetchOverpass(item.normalized);
-        if (result.error) {
-          const line = JSON.stringify({
-            id: item.id,
-            cache: "MISS",
-            error: result.error,
-            status: result.status,
-          }) + "\n";
-          controller.enqueue(encoder.encode(line));
-          continue;
-        }
-
-        // Cache the result
-        const { error: upsertError } = await sb.from("overpass_cache").upsert(
-          {
-            query_hash: item.cacheKey,
-            response: result.data,
-            created_at: new Date().toISOString(),
-          },
-          { onConflict: "query_hash" }
-        );
-        if (upsertError) {
-          console.error("Cache upsert failed:", JSON.stringify(upsertError));
-        }
-
-        const line = JSON.stringify({
-          id: item.id,
-          cache: "MISS",
-          data: result.data,
-          write: upsertError ? "FAIL" : "OK",
-        }) + "\n";
-        controller.enqueue(encoder.encode(line));
-      }
-
-      controller.close();
-    },
-  });
-
-  return new Response(stream, {
+  return new Response(JSON.stringify({ hits, misses }), {
     headers: {
       ...corsHeaders,
-      "Content-Type": "application/x-ndjson",
-      "Transfer-Encoding": "chunked",
+      "Content-Type": "application/json",
     },
   });
 }
