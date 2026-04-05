@@ -293,22 +293,36 @@
     } catch (e) {}
   }
 
-  // --- Build the queue: viewport first, then N/E/S/W sorted by distance ---
+  // --- Build the queue: viewport first, then surrounding regions ---
   function buildRegionQueue() {
     var filterKey = getFilterKey();
     var zoom = map.getZoom();
     var bounds = map.getBounds();
     var padded = bounds.pad(0.3);
-    var center = map.getCenter();
 
-    // Clear old queue
-    regionQueue = [];
+    // Demote any old viewport regions to background
+    regionQueue.forEach(function (r) { r.isViewport = false; });
 
-    // Viewport region (highest priority)
-    if (!regionFullyCovered(padded, filterKey, zoom)) {
-      regionQueue.push({
+    // Helper: check if a bounds is already in the queue
+    function alreadyQueued(b) {
+      var bs = bboxString(b);
+      for (var i = 0; i < regionQueue.length; i++) {
+        if (bboxString(regionQueue[i].bounds) === bs) return true;
+      }
+      return false;
+    }
+
+    // Add viewport region (highest priority)
+    if (!regionFullyCovered(padded, filterKey, zoom) && !alreadyQueued(padded)) {
+      regionQueue.unshift({
         bounds: padded, filterKey: filterKey, zoom: zoom,
         attempts: 0, failTime: 0, isViewport: true
+      });
+    } else {
+      // Mark existing viewport region
+      var bs = bboxString(padded);
+      regionQueue.forEach(function (r) {
+        if (bboxString(r.bounds) === bs) r.isViewport = true;
       });
     }
 
@@ -320,26 +334,22 @@
       [0, -latSpan], [-lngSpan, -latSpan], [-lngSpan, 0], [-lngSpan, latSpan]
     ];
 
-    var surroundings = [];
     offsets.forEach(function (off) {
       var shifted = L.latLngBounds(
         [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
         [bounds.getNorth() + off[1], bounds.getEast() + off[0]]
       );
       if (regionFullyCovered(shifted, filterKey, zoom)) return;
-      var sc = shifted.getCenter();
-      var dist = (sc.lat - center.lat) * (sc.lat - center.lat) +
-                 (sc.lng - center.lng) * (sc.lng - center.lng);
-      surroundings.push({ bounds: shifted, dist: dist });
-    });
-
-    // Sort by distance from center
-    surroundings.sort(function (a, b) { return a.dist - b.dist; });
-    surroundings.forEach(function (s) {
+      if (alreadyQueued(shifted)) return;
       regionQueue.push({
-        bounds: s.bounds, filterKey: filterKey, zoom: s.zoom || zoom,
+        bounds: shifted, filterKey: filterKey, zoom: zoom,
         attempts: 0, failTime: 0, isViewport: false
       });
+    });
+
+    // Purge stale entries (wrong filter/zoom)
+    regionQueue = regionQueue.filter(function (r) {
+      return r.filterKey === filterKey && r.zoom === zoom;
     });
   }
 
@@ -348,7 +358,8 @@
     clearTimeout(workerTimer);
     clearTimeout(retryWakeTimer);
     buildRegionQueue();
-    if (!activeRequest) runNextRegion();
+    // Always try to run next; runNextRegion guards against concurrent
+    runNextRegion();
   }
 
   function runNextRegion() {
@@ -427,8 +438,10 @@
         console.error('Region fetch error:', err.message);
         nextRegion.attempts++;
         nextRegion.failTime = Date.now();
-        if (nextRegion.attempts >= MAX_RETRY) {
-          regionQueue.splice(regionQueue.indexOf(nextRegion), 1);
+        // Never give up on viewport; remove background after MAX_RETRY
+        if (!nextRegion.isViewport && nextRegion.attempts >= MAX_RETRY) {
+          var idx = regionQueue.indexOf(nextRegion);
+          if (idx >= 0) regionQueue.splice(idx, 1);
         }
         consecutiveErrors++;
         if (nextRegion.isViewport) hideLoading();
