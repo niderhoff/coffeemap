@@ -194,7 +194,10 @@
         }
 
         if (initial) {
-          map.setView(userLatLng, 15);
+          // Snap to query grid so viewport bbox is identical across GPS drift
+          var snappedLat = Math.round(pos.coords.latitude / QUERY_GRID) * QUERY_GRID;
+          var snappedLng = Math.round(pos.coords.longitude / QUERY_GRID) * QUERY_GRID;
+          map.setView([snappedLat, snappedLng], 15);
         } else {
           map.flyTo(userLatLng, 16, { duration: 0.8 });
         }
@@ -215,6 +218,7 @@
   // =========================================================================
 
   var CELL_SIZE = 0.005;        // ~500m tracking grid
+  var QUERY_GRID = 0.01;        // ~1km query snap grid (coarser = stable cache keys)
   var CELL_TTL = 60 * 60 * 1000; // 1 hour
   var MAX_ELEMENTS = 3000;
   var MAX_RETRY = 3;
@@ -520,11 +524,11 @@
     return '[out:json][timeout:15];(' + filters.join('') + ');out center;';
   }
 
-  // Snap bbox to grid so queries always align → same cache keys
+  // Snap bbox to QUERY_GRID so small pans/GPS drift don't change cache keys
   function snapToGrid(v, roundDown) {
     return roundDown
-      ? (Math.floor(v / CELL_SIZE) * CELL_SIZE).toFixed(3)
-      : (Math.ceil(v / CELL_SIZE) * CELL_SIZE).toFixed(3);
+      ? (Math.floor(v / QUERY_GRID) * QUERY_GRID).toFixed(2)
+      : (Math.ceil(v / QUERY_GRID) * QUERY_GRID).toFixed(2);
   }
 
   function bboxString(bounds) {
