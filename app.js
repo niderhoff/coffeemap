@@ -509,7 +509,7 @@
       filters.push('way["craft"="roastery"]('+bbox+');');
     }
     if (filters.length === 0) return null;
-    return '[out:json][timeout:25];(' + filters.join('') + ');out center;';
+    return '[out:json][timeout:15];(' + filters.join('') + ');out center;';
   }
 
   function bboxString(bounds) {

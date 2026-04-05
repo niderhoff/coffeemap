@@ -104,8 +104,9 @@ Deno.serve(async (req) => {
     }
 
     if (!res || !res.ok) {
-      return new Response(JSON.stringify({ error: "Overpass error", status: res?.status }), {
-        status: res?.status === 429 ? 429 : 502,
+      const upstream = res?.status || 502;
+      return new Response(JSON.stringify({ error: "Overpass error", status: upstream }), {
+        status: upstream === 429 ? 429 : upstream >= 500 ? upstream : 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
