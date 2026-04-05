@@ -316,14 +316,14 @@
       return false;
     }
 
-    // Add viewport region (highest priority)
-    if (!regionFullyCovered(padded, filterKey, zoom) && !alreadyQueued(padded)) {
+    // Always include viewport in batch — cache hits are free and stream back
+    // instantly, so there's no cost to re-requesting a covered region.
+    if (!alreadyQueued(padded)) {
       regionQueue.unshift({
         bounds: padded, filterKey: filterKey, zoom: zoom,
         attempts: 0, failTime: 0, isViewport: true
       });
     } else {
-      // Mark existing viewport region
       var bs = bboxString(padded);
       regionQueue.forEach(function (r) {
         if (bboxString(r.bounds) === bs) r.isViewport = true;
@@ -357,107 +357,132 @@
     });
   }
 
-  // --- Worker: processes one region at a time ---
+  // --- Worker: batch-fetches all regions in one streaming request ---
   function wakeWorker() {
     clearTimeout(workerTimer);
     clearTimeout(retryWakeTimer);
     buildRegionQueue();
-    // Always try to run next; runNextRegion guards against concurrent
-    runNextRegion();
+    runBatch();
   }
 
-  function runNextRegion() {
+  function runBatch() {
     if (activeRequest) return;
 
-    // Re-sort queue by distance from current center (user may have panned)
-    var center = map.getCenter();
-    regionQueue.sort(function (a, b) {
-      if (a.isViewport !== b.isViewport) return a.isViewport ? -1 : 1;
-      var ac = a.bounds.getCenter();
-      var bc = b.bounds.getCenter();
+    var filterKey = getFilterKey();
+    var zoom = map.getZoom();
+
+    // Collect regions — always include viewport (cache hits are free),
+    // skip covered background regions
+    var toFetch = [];
+    var regionMap = {}; // id -> region
+    for (var i = 0; i < regionQueue.length; i++) {
+      var r = regionQueue[i];
+      if (!r.isViewport && regionFullyCovered(r.bounds, r.filterKey, r.zoom)) {
+        regionQueue.splice(i, 1); i--; continue;
+      }
+      var bbox = bboxString(r.bounds);
+      var query = buildQuery(bbox);
+      if (!query) { regionQueue.splice(i, 1); i--; continue; }
+      var id = bbox;
+      toFetch.push({ id: id, query: query });
+      regionMap[id] = r;
+    }
+
+    if (toFetch.length === 0) {
+      hideLoading();
+      return;
+    }
+
+    // Sort: viewport first
+    toFetch.sort(function (a, b) {
+      var ra = regionMap[a.id], rb = regionMap[b.id];
+      if (ra.isViewport !== rb.isViewport) return ra.isViewport ? -1 : 1;
+      var center = map.getCenter();
+      var ac = ra.bounds.getCenter(), bc = rb.bounds.getCenter();
       var da = (ac.lat - center.lat) * (ac.lat - center.lat) + (ac.lng - center.lng) * (ac.lng - center.lng);
       var db = (bc.lat - center.lat) * (bc.lat - center.lat) + (bc.lng - center.lng) * (bc.lng - center.lng);
       return da - db;
     });
 
-    // Find next region that's ready (skip covered, respect cooldowns)
-    var now = Date.now();
-    var nextRegion = null;
-    var nextIdx = -1;
-    var earliestRetry = null;
-
-    for (var i = 0; i < regionQueue.length; i++) {
-      var r = regionQueue[i];
-      // Already covered (by another overlapping fetch)?
-      if (regionFullyCovered(r.bounds, r.filterKey, r.zoom)) {
-        regionQueue.splice(i, 1); i--; continue;
-      }
-      // In cooldown?
-      if (r.failTime > 0) {
-        var cooldown = r.isViewport ? 3000 : 10000;
-        var wait = cooldown - (now - r.failTime);
-        if (wait > 0) {
-          if (earliestRetry === null || wait < earliestRetry) earliestRetry = wait;
-          continue;
-        }
-      }
-      nextRegion = r;
-      nextIdx = i;
-      break;
-    }
-
-    if (!nextRegion) {
-      // Nothing to do now — schedule wake for retries
-      if (earliestRetry !== null) {
-        retryWakeTimer = setTimeout(runNextRegion, earliestRetry + 100);
-      }
-      hideLoading();
-      return;
-    }
-
-    if (nextRegion.isViewport) showLoading();
-
+    showLoading();
     activeRequest = true;
-    var query = buildQuery(bboxString(nextRegion.bounds));
-    if (!query) {
-      regionQueue.splice(nextIdx, 1);
-      activeRequest = false;
-      runNextRegion();
-      return;
-    }
+    console.log('Batch fetch:', toFetch.length, 'regions');
 
-    fireQuery(query)
-      .then(function (data) {
-        markCellsFetched(nextRegion.bounds, nextRegion.filterKey, nextRegion.zoom);
-        regionQueue.splice(regionQueue.indexOf(nextRegion), 1);
-        if (data && data.elements && data.elements.length > 0) {
-          mergeElements(data.elements);
-          renderShops(lastElements);
-        }
-        consecutiveErrors = 0;
-        if (nextRegion.isViewport) hideLoading();
-      })
-      .catch(function (err) {
-        if (err.name === 'AbortError') return;
-        console.error('Region fetch error:', err.message);
-        nextRegion.attempts++;
-        nextRegion.failTime = Date.now();
-        // Never give up on viewport; remove background after MAX_RETRY
-        if (!nextRegion.isViewport && nextRegion.attempts >= MAX_RETRY) {
-          var idx = regionQueue.indexOf(nextRegion);
-          if (idx >= 0) regionQueue.splice(idx, 1);
-        }
-        consecutiveErrors++;
-        if (nextRegion.isViewport) hideLoading();
-      })
-      .then(function () {
-        activeRequest = false;
-        // Gap: fast when healthy, slower on errors
+    var proxyUrl = SUPABASE_URL + '/functions/v1/overpass-proxy';
+    fetch(proxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
+      body: JSON.stringify({ queries: toFetch }),
+    }).then(function (res) {
+      if (!res.ok) {
+        throw new Error('Batch proxy error ' + res.status);
+      }
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = '';
+
+      function processLines() {
+        var lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        lines.forEach(function (line) {
+          if (!line.trim()) return;
+          try {
+            var result = JSON.parse(line);
+            var region = regionMap[result.id];
+            if (!region) return;
+            console.log('Stream:', result.id, 'cache=' + result.cache, result.error || '');
+            if (result.data && result.data.elements && result.data.elements.length > 0) {
+              mergeElements(result.data.elements);
+              renderShops(lastElements);
+              markCellsFetched(region.bounds, region.filterKey, region.zoom);
+              var idx = regionQueue.indexOf(region);
+              if (idx >= 0) regionQueue.splice(idx, 1);
+            } else if (result.error) {
+              region.attempts++;
+              region.failTime = Date.now();
+              if (!region.isViewport && region.attempts >= MAX_RETRY) {
+                var idx = regionQueue.indexOf(region);
+                if (idx >= 0) regionQueue.splice(idx, 1);
+              }
+            } else {
+              // Success but no elements
+              markCellsFetched(region.bounds, region.filterKey, region.zoom);
+              var idx = regionQueue.indexOf(region);
+              if (idx >= 0) regionQueue.splice(idx, 1);
+            }
+          } catch (e) {
+            console.error('Stream parse error:', e);
+          }
+        });
+      }
+
+      function pump() {
+        return reader.read().then(function (result) {
+          if (result.done) {
+            if (buffer.trim()) processLines();
+            return;
+          }
+          buffer += decoder.decode(result.value, { stream: true });
+          processLines();
+          return pump();
+        });
+      }
+
+      return pump();
+    }).catch(function (err) {
+      console.error('Batch fetch error:', err.message);
+      consecutiveErrors++;
+    }).then(function () {
+      activeRequest = false;
+      hideLoading();
+      // Retry remaining regions after a delay if any are left
+      if (regionQueue.length > 0) {
         var gap = consecutiveErrors > 0
-          ? Math.min(2000 * Math.pow(2, consecutiveErrors - 1), 15000)
-          : 500;
-        workerTimer = setTimeout(runNextRegion, gap);
-      });
+          ? Math.min(5000 * Math.pow(2, consecutiveErrors - 1), 30000)
+          : 3000;
+        workerTimer = setTimeout(function () { consecutiveErrors = 0; runBatch(); }, gap);
+      }
+    });
   }
 
   // --- Main entry point ---
