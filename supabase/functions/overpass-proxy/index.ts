@@ -6,7 +6,7 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
-  "Access-Control-Expose-Headers": "X-Cache, X-Cache-Age",
+  "Access-Control-Expose-Headers": "X-Cache, X-Cache-Age, X-Cache-Key, X-Cache-Write",
 };
 
 // Simple hash for cache key
@@ -131,6 +131,8 @@ Deno.serve(async (req) => {
         ...corsHeaders,
         "Content-Type": "application/json",
         "X-Cache": "MISS",
+        "X-Cache-Key": cacheKey.substring(0, 12),
+        "X-Cache-Write": upsertError ? "FAIL:" + upsertError.message : "OK",
       },
     });
   } catch (err) {

@@ -555,7 +555,9 @@
           throw new Error('Proxy error ' + res.status + ': ' + body);
         });
       }
-      console.log('X-Cache:', res.headers.get('X-Cache'));
+      console.log('X-Cache:', res.headers.get('X-Cache'),
+        'Key:', res.headers.get('X-Cache-Key'),
+        'Write:', res.headers.get('X-Cache-Write'));
       return res.json();
     });
   }
