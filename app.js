@@ -220,11 +220,13 @@
   var MAX_CONCURRENT = 2;
   var BASE_GAP = 300;         // ms between requests when things are healthy
   var currentGap = BASE_GAP;  // adaptive: increases on errors, decreases on success
-  var RETRY_COOLDOWN = 30000; // 30s before retrying a failed cell
-  var MAX_RETRY = 3;
+  var RETRY_COOLDOWN_VIEWPORT = 2000;  // 2s retry for cells in/near viewport
+  var RETRY_COOLDOWN_BACKGROUND = 15000; // 15s retry for distant cells
+  var MAX_RETRY = 5;
   var PREFETCH_RINGS = 3;     // rings of cells beyond viewport to enqueue
   var MAX_ELEMENTS = 3000;
   var consecutiveErrors = 0;
+  var retryWakeTimer = null;  // timer to wake worker when cooldowns expire
 
   // Cell states: 'fetched' | 'pending' | 'failed'
   // Cells not in the map are unfetched
@@ -289,43 +291,55 @@
     } catch (e) {}
   }
 
-  // --- Check if a cell needs fetching ---
-  function cellNeedsFetch(cx, cy, filterKey, zoom) {
-    var id = cellId(cx, cy);
-    var c = cellStates[id];
-    if (!c) return true; // never fetched
-    if (c.filterKey !== filterKey || c.zoom !== zoom) return true; // stale filter/zoom
-    if (c.state === 'fetched' && Date.now() - c.time < CELL_TTL) return false;
-    if (c.state === 'pending') return false;
-    if (c.state === 'failed') {
-      if (c.attempts >= MAX_RETRY) return false;
-      if (Date.now() - c.time < RETRY_COOLDOWN) return false;
-      return true; // retry
-    }
-    return true;
-  }
-
   // --- Collect all cells that need fetching (viewport + surrounding rings) ---
+  // Returns { needed: [...], nextRetryIn: ms|null }
   function collectNeededCells(filterKey, zoom) {
     var bounds = map.getBounds().pad(0.1);
     var sw = cellCoord(bounds.getSouth(), bounds.getWest());
     var ne = cellCoord(bounds.getNorth(), bounds.getEast());
 
-    // Expand by PREFETCH_RINGS cells in each direction
     var minCx = sw.cx - PREFETCH_RINGS;
     var maxCx = ne.cx + PREFETCH_RINGS;
     var minCy = sw.cy - PREFETCH_RINGS;
     var maxCy = ne.cy + PREFETCH_RINGS;
 
     var needed = [];
+    var now = Date.now();
+    var earliestRetry = null;
+
+    // Viewport cell range (for distance-based cooldown)
+    var vBounds = map.getBounds();
+    var vSw = cellCoord(vBounds.getSouth(), vBounds.getWest());
+    var vNe = cellCoord(vBounds.getNorth(), vBounds.getEast());
+
     for (var cy = minCy; cy <= maxCy; cy++) {
       for (var cx = minCx; cx <= maxCx; cx++) {
-        if (cellNeedsFetch(cx, cy, filterKey, zoom)) {
+        var id = cellId(cx, cy);
+        var c = cellStates[id];
+
+        if (!c || c.filterKey !== filterKey || c.zoom !== zoom) {
           needed.push({ cx: cx, cy: cy });
+          continue;
         }
+        if (c.state === 'fetched' && now - c.time < CELL_TTL) continue;
+        if (c.state === 'pending') continue;
+        if (c.state === 'failed') {
+          if (c.attempts >= MAX_RETRY) continue;
+          // Use shorter cooldown for viewport cells, longer for distant ones
+          var inViewport = cx >= vSw.cx && cx <= vNe.cx && cy >= vSw.cy && cy <= vNe.cy;
+          var cooldown = inViewport ? RETRY_COOLDOWN_VIEWPORT : RETRY_COOLDOWN_BACKGROUND;
+          var remaining = cooldown - (now - c.time);
+          if (remaining > 0) {
+            if (earliestRetry === null || remaining < earliestRetry) {
+              earliestRetry = remaining;
+            }
+            continue;
+          }
+        }
+        needed.push({ cx: cx, cy: cy });
       }
     }
-    return needed;
+    return { needed: needed, nextRetryIn: earliestRetry };
   }
 
   // --- Sort cells by distance from viewport center ---
@@ -389,14 +403,20 @@
     }
 
     // Collect and sort needed cells
-    var needed = collectNeededCells(filterKey, zoom);
-    needed = sortByDistanceFromCenter(needed);
+    var result = collectNeededCells(filterKey, zoom);
+    var needed = sortByDistanceFromCenter(result.needed);
 
     if (needed.length === 0 || activeRequests >= MAX_CONCURRENT) {
       workerRunning = false;
       hideLoading();
-      // Save periodically
       saveCellStates();
+      // Schedule wake-up when cooldowns expire
+      if (result.nextRetryIn !== null && result.nextRetryIn > 0) {
+        clearTimeout(retryWakeTimer);
+        retryWakeTimer = setTimeout(function () {
+          wakeWorker();
+        }, result.nextRetryIn + 100);
+      }
       return;
     }
 
@@ -464,8 +484,11 @@
   function invalidateCache(clearData) {
     cellStates = {};
     clearTimeout(workerTimer);
+    clearTimeout(retryWakeTimer);
     workerRunning = false;
     activeRequests = 0;
+    consecutiveErrors = 0;
+    currentGap = BASE_GAP;
     try { localStorage.removeItem('cm_cells'); } catch (e) {}
     if (clearData) {
       clearElements();
