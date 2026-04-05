@@ -321,6 +321,8 @@
     }
 
     if (searchAbort) searchAbort.abort();
+    if (prefetchAbort) prefetchAbort.abort();
+    clearTimeout(prefetchTimer);
     searchAbort = new AbortController();
 
     showLoading();
@@ -347,19 +349,23 @@
 
   // --- Prefetch surrounding tiles to warm the server cache ---
   var prefetchTimer = null;
+  var prefetchAbort = null;
 
   function prefetchSurroundings(bounds) {
-    if (!sb) return; // Only useful with server cache
+    if (!sb) return;
     clearTimeout(prefetchTimer);
-    // Delay slightly so we don't block the UI
+    if (prefetchAbort) prefetchAbort.abort();
     prefetchTimer = setTimeout(function () { doPrefetch(bounds); }, 2000);
   }
 
   function doPrefetch(bounds) {
+    if (prefetchAbort) prefetchAbort.abort();
+    prefetchAbort = new AbortController();
+    var signal = prefetchAbort.signal;
+
     var lat = bounds.getNorth() - bounds.getSouth();
     var lng = bounds.getEast() - bounds.getWest();
 
-    // 4 cardinal tiles: N, E, S, W (skip diagonals to reduce requests)
     var offsets = [
       [0, lat],    // N
       [lng, 0],    // E
@@ -367,7 +373,6 @@
       [-lng, 0],   // W
     ];
 
-    // Fire prefetches sequentially to avoid rate limiting
     var queue = offsets.map(function (off) {
       var shifted = L.latLngBounds(
         [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
@@ -377,9 +382,10 @@
     }).filter(Boolean);
 
     function runNext(idx) {
-      if (idx >= queue.length) return;
-      fireQuery(queue[idx])
+      if (idx >= queue.length || signal.aborted) return;
+      fireQuery(queue[idx], signal)
         .then(function (data) {
+          if (signal.aborted) return;
           if (data && data.elements && data.elements.length > 0) {
             mergeElements(data.elements);
             renderShops(lastElements);
@@ -387,6 +393,7 @@
         })
         .catch(function () {})
         .then(function () {
+          if (signal.aborted) return;
           setTimeout(function () { runNext(idx + 1); }, 3000);
         });
     }
