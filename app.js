@@ -316,9 +316,10 @@
       return false;
     }
 
-    // Always include viewport in batch — cache hits are free and stream back
-    // instantly, so there's no cost to re-requesting a covered region.
-    if (!alreadyQueued(padded)) {
+    // Viewport: always include if no data in memory (reload case), otherwise
+    // respect cellStates coverage to avoid refetching on tiny scrolls
+    var viewportCovered = lastElements.length > 0 && regionFullyCovered(padded, filterKey, zoom);
+    if (!viewportCovered && !alreadyQueued(padded)) {
       regionQueue.unshift({
         bounds: padded, filterKey: filterKey, zoom: zoom,
         attempts: 0, failTime: 0, isViewport: true
@@ -330,7 +331,7 @@
       });
     }
 
-    // Surrounding regions: N, NE, E, SE, S, SW, W, NW
+    // Surrounding regions: only add uncovered ones (progressive fetch)
     var latSpan = bounds.getNorth() - bounds.getSouth();
     var lngSpan = bounds.getEast() - bounds.getWest();
     var offsets = [
@@ -343,6 +344,7 @@
         [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
         [bounds.getNorth() + off[1], bounds.getEast() + off[0]]
       );
+      if (regionFullyCovered(shifted, filterKey, zoom)) return;
       if (alreadyQueued(shifted)) return;
       regionQueue.push({
         bounds: shifted, filterKey: filterKey, zoom: zoom,
@@ -367,11 +369,14 @@
   function runBatch() {
     if (activeRequest) return;
 
-    // Collect all regions
+    // Collect uncovered regions only
     var toFetch = [];
     var regionMap = {}; // id -> region
     for (var i = 0; i < regionQueue.length; i++) {
       var r = regionQueue[i];
+      if (!r.isViewport && regionFullyCovered(r.bounds, r.filterKey, r.zoom)) {
+        regionQueue.splice(i, 1); i--; continue;
+      }
       var bbox = bboxString(r.bounds);
       var query = buildQuery(bbox);
       if (!query) { regionQueue.splice(i, 1); i--; continue; }
