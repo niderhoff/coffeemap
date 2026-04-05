@@ -486,6 +486,9 @@
       }
       if (region.isViewport) hideLoading();
     }).then(function () {
+      // Small delay between Overpass requests to avoid 429 rate limiting
+      return new Promise(function (resolve) { setTimeout(resolve, 1500); });
+    }).then(function () {
       return fetchMissesSequentially(misses.slice(1), regionMap);
     });
   }
