@@ -90,7 +90,6 @@
   let userLatLng = null;
   let shopMarkers = [];
   let activeMarker = null;
-  let searchAbort = null;
   let currentOsmId = null;
   let currentShopName = null;
 
@@ -207,39 +206,19 @@
     );
   }
 
-  // --- Cache: track fetched grid cells to avoid duplicate requests ---
+  // --- Request manager: tracks all fetched areas, queues requests, retries failures ---
+  var AREA_TTL = 60 * 60 * 1000; // 1 hour
+  var MAX_CONCURRENT = 2;
+  var RETRY_DELAY = 30000; // 30s before retrying failed areas
+  var MAX_ELEMENTS = 2000;
+
   var lastElements = [];
-  var fetchedCells = {}; // "filterKey:zoom:cellX,cellY" -> true
-  var GRID_SIZE = 0.01; // ~1km grid, matches edge function normalization
-
-  function cellKey(lat, lng, filterKey, zoom) {
-    var cx = Math.floor(lng / GRID_SIZE);
-    var cy = Math.floor(lat / GRID_SIZE);
-    return filterKey + ':' + zoom + ':' + cx + ',' + cy;
-  }
-
-  // Mark all grid cells covered by bounds as fetched
-  function markFetched(bounds, filterKey, zoom) {
-    var s = bounds.getSouth(), n = bounds.getNorth();
-    var w = bounds.getWest(), e = bounds.getEast();
-    for (var lat = Math.floor(s / GRID_SIZE) * GRID_SIZE; lat <= n; lat += GRID_SIZE) {
-      for (var lng = Math.floor(w / GRID_SIZE) * GRID_SIZE; lng <= e; lng += GRID_SIZE) {
-        fetchedCells[cellKey(lat, lng, filterKey, zoom)] = true;
-      }
-    }
-  }
-
-  // Check if all grid cells in bounds are already fetched
-  function allCellsFetched(bounds, filterKey, zoom) {
-    var s = bounds.getSouth(), n = bounds.getNorth();
-    var w = bounds.getWest(), e = bounds.getEast();
-    for (var lat = Math.floor(s / GRID_SIZE) * GRID_SIZE; lat <= n; lat += GRID_SIZE) {
-      for (var lng = Math.floor(w / GRID_SIZE) * GRID_SIZE; lng <= e; lng += GRID_SIZE) {
-        if (!fetchedCells[cellKey(lat, lng, filterKey, zoom)]) return false;
-      }
-    }
-    return true;
-  }
+  var elementIndex = {}; // type/id -> true
+  var fetchedAreas = []; // [{s,w,n,e,filterKey,zoom,time}]
+  var failedAreas = [];  // [{s,w,n,e,filterKey,zoom,failTime,attempts}]
+  var requestQueue = []; // [{query,bounds,filterKey,zoom,priority,signal}]
+  var activeRequests = 0;
+  var globalAbort = null;
 
   function getFilterKey() {
     return ($filterCafe.checked ? 'c' : '') +
@@ -247,18 +226,82 @@
            ($filterRoastery.checked ? 'r' : '');
   }
 
+  // Persist fetched areas to localStorage
+  function saveFetchedAreas() {
+    try {
+      localStorage.setItem('cm_areas', JSON.stringify(fetchedAreas));
+    } catch (e) {}
+  }
+
+  function loadFetchedAreas() {
+    try {
+      var stored = localStorage.getItem('cm_areas');
+      if (stored) {
+        var now = Date.now();
+        fetchedAreas = JSON.parse(stored).filter(function (a) {
+          return now - a.time < AREA_TTL;
+        });
+      }
+    } catch (e) {}
+  }
+
+  // Check if bounds is fully covered by fetched areas
+  function isCovered(bounds, filterKey, zoom) {
+    var now = Date.now();
+    var s = bounds.getSouth(), w = bounds.getWest();
+    var n = bounds.getNorth(), e = bounds.getEast();
+    // Sample points across the bounds to check coverage
+    var step = 0.005; // ~500m
+    for (var lat = s; lat <= n; lat += step) {
+      for (var lng = w; lng <= e; lng += step) {
+        var covered = false;
+        for (var i = 0; i < fetchedAreas.length; i++) {
+          var a = fetchedAreas[i];
+          if (a.filterKey !== filterKey) continue;
+          if (a.zoom !== zoom) continue;
+          if (now - a.time >= AREA_TTL) continue;
+          if (lat >= a.s && lat <= a.n && lng >= a.w && lng <= a.e) {
+            covered = true;
+            break;
+          }
+        }
+        if (!covered) return false;
+      }
+    }
+    return true;
+  }
+
+  function markAreaFetched(bounds, filterKey, zoom) {
+    fetchedAreas.push({
+      s: bounds.getSouth(), w: bounds.getWest(),
+      n: bounds.getNorth(), e: bounds.getEast(),
+      filterKey: filterKey, zoom: zoom, time: Date.now()
+    });
+    // Evict expired
+    var now = Date.now();
+    fetchedAreas = fetchedAreas.filter(function (a) { return now - a.time < AREA_TTL; });
+    saveFetchedAreas();
+  }
+
+  function markAreaFailed(bounds, filterKey, zoom) {
+    failedAreas.push({
+      s: bounds.getSouth(), w: bounds.getWest(),
+      n: bounds.getNorth(), e: bounds.getEast(),
+      filterKey: filterKey, zoom: zoom,
+      failTime: Date.now(), attempts: 1
+    });
+  }
+
   function invalidateCache(clearData) {
-    fetchedCells = {};
+    fetchedAreas = [];
+    failedAreas = [];
+    requestQueue = [];
+    try { localStorage.removeItem('cm_areas'); } catch (e) {}
     if (clearData) {
       clearElements();
       clearMarkers();
     }
   }
-
-  // Merge new elements into lastElements, deduped by OSM type+id
-  var elementIndex = {}; // type/id -> true
-
-  var MAX_ELEMENTS = 500;
 
   function mergeElements(newElements) {
     newElements.forEach(function (el) {
@@ -268,7 +311,6 @@
         lastElements.push(el);
       }
     });
-    // Cap to prevent unbounded memory growth — keep newest
     if (lastElements.length > MAX_ELEMENTS) {
       var removed = lastElements.splice(0, lastElements.length - MAX_ELEMENTS);
       removed.forEach(function (el) { delete elementIndex[el.type + '/' + el.id]; });
@@ -306,7 +348,6 @@
 
   function fireQuery(query, signal) {
     var proxyUrl = SUPABASE_URL + '/functions/v1/overpass-proxy';
-
     return fetch(proxyUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
@@ -323,107 +364,142 @@
     });
   }
 
+  // --- Request queue: max 2 concurrent, sequential drain ---
+  function enqueue(query, bounds, filterKey, zoom, priority, signal) {
+    requestQueue.push({ query: query, bounds: bounds, filterKey: filterKey, zoom: zoom, priority: priority, signal: signal });
+    // Sort: priority 0 (viewport) first, then 1 (prefetch), then 2 (retry)
+    requestQueue.sort(function (a, b) { return a.priority - b.priority; });
+    drainQueue();
+  }
+
+  function drainQueue() {
+    while (activeRequests < MAX_CONCURRENT && requestQueue.length > 0) {
+      var item = requestQueue.shift();
+      if (item.signal && item.signal.aborted) continue;
+      executeRequest(item);
+    }
+  }
+
+  function executeRequest(item) {
+    activeRequests++;
+    var isViewport = item.priority === 0;
+    if (isViewport) showLoading();
+
+    fireQuery(item.query, item.signal)
+      .then(function (data) {
+        if (item.signal && item.signal.aborted) return;
+        markAreaFetched(item.bounds, item.filterKey, item.zoom);
+        if (data && data.elements) {
+          mergeElements(data.elements);
+          renderShops(lastElements);
+        }
+      })
+      .catch(function (err) {
+        if (err.name === 'AbortError') return;
+        console.error('Fetch error:', err);
+        markAreaFailed(item.bounds, item.filterKey, item.zoom);
+      })
+      .then(function () {
+        activeRequests--;
+        if (isViewport) hideLoading();
+        // Small delay between requests to spread load
+        setTimeout(drainQueue, 800);
+      });
+  }
+
+  // --- Main fetch triggered by map move ---
   function fetchCoffeeShops() {
     var bounds = map.getBounds();
     var zoom = map.getZoom();
     var filterKey = getFilterKey();
     var padded = bounds.pad(0.2);
 
-    // Skip if we already fetched all grid cells in this area
-    if (allCellsFetched(padded, filterKey, zoom)) {
+    if (isCovered(padded, filterKey, zoom)) {
+      retryFailedNearby();
       return;
     }
 
     var query = buildQuery(bboxString(padded));
-
     if (!query) {
       clearMarkers();
       invalidateCache();
       return;
     }
 
-    if (searchAbort) searchAbort.abort();
-    if (prefetchAbort) prefetchAbort.abort();
+    // Cancel previous viewport requests
+    if (globalAbort) globalAbort.abort();
+    globalAbort = new AbortController();
+    // Clear queued prefetches/retries (keep nothing stale)
+    requestQueue = requestQueue.filter(function (r) { return r.priority === 0; });
+
+    enqueue(query, padded, filterKey, zoom, 0, globalAbort.signal);
+
+    // Schedule prefetch after a short delay
     clearTimeout(prefetchTimer);
-    searchAbort = new AbortController();
-
-    showLoading();
-
-    fireQuery(query, searchAbort.signal)
-      .then(function (data) {
-        hideLoading();
-        mergeElements(data.elements || []);
-        markFetched(padded, filterKey, zoom);
-        renderShops(lastElements);
-        prefetchSurroundings(bounds);
-      })
-      .catch(function (err) {
-        hideLoading();
-        if (err.name !== 'AbortError') {
-          console.error('Overpass fetch error:', err);
-        }
-      });
+    prefetchTimer = setTimeout(function () {
+      schedulePrefetch(bounds, filterKey, zoom);
+    }, 1500);
   }
 
-  // --- Prefetch surrounding tiles to warm the server cache ---
+  // --- Prefetch surrounding areas ---
   var prefetchTimer = null;
-  var prefetchAbort = null;
 
-  function prefetchSurroundings(bounds) {
-    if (!sb) return;
-    clearTimeout(prefetchTimer);
-    if (prefetchAbort) prefetchAbort.abort();
-    prefetchTimer = setTimeout(function () { doPrefetch(bounds); }, 2000);
-  }
+  function schedulePrefetch(bounds, filterKey, zoom) {
+    if (!globalAbort || globalAbort.signal.aborted) return;
+    var signal = globalAbort.signal;
 
-  function doPrefetch(bounds) {
-    if (prefetchAbort) prefetchAbort.abort();
-    prefetchAbort = new AbortController();
-    var signal = prefetchAbort.signal;
-    var filterKey = getFilterKey();
-    var zoom = map.getZoom();
-
-    var lat = bounds.getNorth() - bounds.getSouth();
-    var lng = bounds.getEast() - bounds.getWest();
+    var latSpan = bounds.getNorth() - bounds.getSouth();
+    var lngSpan = bounds.getEast() - bounds.getWest();
 
     var offsets = [
-      [0, lat],    // N
-      [lng, 0],    // E
-      [0, -lat],   // S
-      [-lng, 0],   // W
+      [0, latSpan], [lngSpan, 0], [0, -latSpan], [-lngSpan, 0] // N, E, S, W
     ];
 
-    // Build queue, skip tiles we already fetched
-    var queue = [];
     offsets.forEach(function (off) {
       var shifted = L.latLngBounds(
         [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
         [bounds.getNorth() + off[1], bounds.getEast() + off[0]]
       );
-      if (allCellsFetched(shifted, filterKey, zoom)) return;
+      if (isCovered(shifted, filterKey, zoom)) return;
       var query = buildQuery(bboxString(shifted));
-      if (query) queue.push({ query: query, bounds: shifted });
+      if (query) enqueue(query, shifted, filterKey, zoom, 1, signal);
     });
-
-    function runNext(idx) {
-      if (idx >= queue.length || signal.aborted) return;
-      fireQuery(queue[idx].query, signal)
-        .then(function (data) {
-          if (signal.aborted) return;
-          markFetched(queue[idx].bounds, filterKey, zoom);
-          if (data && data.elements && data.elements.length > 0) {
-            mergeElements(data.elements);
-            renderShops(lastElements);
-          }
-        })
-        .catch(function () {})
-        .then(function () {
-          if (signal.aborted) return;
-          setTimeout(function () { runNext(idx + 1); }, 3000);
-        });
-    }
-    runNext(0);
   }
+
+  // --- Retry failed areas when user is nearby ---
+  function retryFailedNearby() {
+    if (!globalAbort || failedAreas.length === 0) return;
+    var signal = globalAbort.signal;
+    var now = Date.now();
+    var bounds = map.getBounds();
+    var filterKey = getFilterKey();
+    var zoom = map.getZoom();
+
+    var toRetry = [];
+    var remaining = [];
+    failedAreas.forEach(function (f) {
+      if (f.filterKey !== filterKey || f.zoom !== zoom) { remaining.push(f); return; }
+      if (now - f.failTime < RETRY_DELAY) { remaining.push(f); return; }
+      // Check if the failed area overlaps current viewport
+      var overlaps = !(f.e < bounds.getWest() || f.w > bounds.getEast() ||
+                       f.n < bounds.getSouth() || f.s > bounds.getNorth());
+      if (overlaps && f.attempts < 3) {
+        toRetry.push(f);
+      } else {
+        remaining.push(f);
+      }
+    });
+    failedAreas = remaining;
+
+    toRetry.forEach(function (f) {
+      var b = L.latLngBounds([f.s, f.w], [f.n, f.e]);
+      var query = buildQuery(bboxString(b));
+      if (query) enqueue(query, b, f.filterKey, f.zoom, 2, signal);
+    });
+  }
+
+  // Load persisted areas on startup
+  loadFetchedAreas();
 
   // --- Render shop markers (incremental — never destroys existing markers) ---
   var markerIndex = {}; // osmId -> marker
