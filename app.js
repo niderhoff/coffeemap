@@ -359,38 +359,38 @@
     var lat = bounds.getNorth() - bounds.getSouth();
     var lng = bounds.getEast() - bounds.getWest();
 
-    // 8 surrounding tiles: N, NE, E, SE, S, SW, W, NW
+    // 4 cardinal tiles: N, E, S, W (skip diagonals to reduce requests)
     var offsets = [
       [0, lat],    // N
-      [lng, lat],  // NE
       [lng, 0],    // E
-      [lng, -lat], // SE
       [0, -lat],   // S
-      [-lng, -lat],// SW
       [-lng, 0],   // W
-      [-lng, lat], // NW
     ];
 
-    offsets.forEach(function (off, i) {
+    // Fire prefetches sequentially to avoid rate limiting
+    var queue = offsets.map(function (off) {
       var shifted = L.latLngBounds(
         [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
         [bounds.getNorth() + off[1], bounds.getEast() + off[0]]
       );
-      var query = buildQuery(bboxString(shifted));
-      if (!query) return;
+      return buildQuery(bboxString(shifted));
+    }).filter(Boolean);
 
-      // Stagger requests to avoid hammering Overpass
-      setTimeout(function () {
-        fireQuery(query)
-          .then(function (data) {
-            if (data && data.elements && data.elements.length > 0) {
-              mergeElements(data.elements);
-              renderShops(lastElements);
-            }
-          })
-          .catch(function () {}); // Ignore prefetch errors
-      }, i * 1500);
-    });
+    function runNext(idx) {
+      if (idx >= queue.length) return;
+      fireQuery(queue[idx])
+        .then(function (data) {
+          if (data && data.elements && data.elements.length > 0) {
+            mergeElements(data.elements);
+            renderShops(lastElements);
+          }
+        })
+        .catch(function () {})
+        .then(function () {
+          setTimeout(function () { runNext(idx + 1); }, 3000);
+        });
+    }
+    runNext(0);
   }
 
   // --- Render shop markers (incremental — never destroys existing markers) ---
