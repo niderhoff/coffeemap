@@ -539,6 +539,10 @@
   }
 
   function fireQuery(query, signal) {
+    // Debug: log the exact query bbox being sent
+    var bboxMatch = query.match(/\(([^)]+)\)/);
+    if (bboxMatch) console.log('Query bbox:', bboxMatch[1].substring(0, 60));
+
     var proxyUrl = SUPABASE_URL + '/functions/v1/overpass-proxy';
     return fetch(proxyUrl, {
       method: 'POST',
