@@ -207,13 +207,39 @@
     );
   }
 
-  // --- Simple cache ---
-  var lastFetchCenter = null;
-  var lastFetchZoom = null;
-  var lastFilterKey = '';
+  // --- Cache: track fetched grid cells to avoid duplicate requests ---
   var lastElements = [];
-  var CACHE_TTL = 5 * 60 * 1000;
-  var lastFetchTime = 0;
+  var fetchedCells = {}; // "filterKey:zoom:cellX,cellY" -> true
+  var GRID_SIZE = 0.01; // ~1km grid, matches edge function normalization
+
+  function cellKey(lat, lng, filterKey, zoom) {
+    var cx = Math.floor(lng / GRID_SIZE);
+    var cy = Math.floor(lat / GRID_SIZE);
+    return filterKey + ':' + zoom + ':' + cx + ',' + cy;
+  }
+
+  // Mark all grid cells covered by bounds as fetched
+  function markFetched(bounds, filterKey, zoom) {
+    var s = bounds.getSouth(), n = bounds.getNorth();
+    var w = bounds.getWest(), e = bounds.getEast();
+    for (var lat = Math.floor(s / GRID_SIZE) * GRID_SIZE; lat <= n; lat += GRID_SIZE) {
+      for (var lng = Math.floor(w / GRID_SIZE) * GRID_SIZE; lng <= e; lng += GRID_SIZE) {
+        fetchedCells[cellKey(lat, lng, filterKey, zoom)] = true;
+      }
+    }
+  }
+
+  // Check if all grid cells in bounds are already fetched
+  function allCellsFetched(bounds, filterKey, zoom) {
+    var s = bounds.getSouth(), n = bounds.getNorth();
+    var w = bounds.getWest(), e = bounds.getEast();
+    for (var lat = Math.floor(s / GRID_SIZE) * GRID_SIZE; lat <= n; lat += GRID_SIZE) {
+      for (var lng = Math.floor(w / GRID_SIZE) * GRID_SIZE; lng <= e; lng += GRID_SIZE) {
+        if (!fetchedCells[cellKey(lat, lng, filterKey, zoom)]) return false;
+      }
+    }
+    return true;
+  }
 
   function getFilterKey() {
     return ($filterCafe.checked ? 'c' : '') +
@@ -222,8 +248,7 @@
   }
 
   function invalidateCache(clearData) {
-    lastFetchCenter = null;
-    lastFilterKey = '';
+    fetchedCells = {};
     if (clearData) {
       clearElements();
       clearMarkers();
@@ -299,19 +324,16 @@
   }
 
   function fetchCoffeeShops() {
-    const bounds = map.getBounds();
-    var center = map.getCenter();
+    var bounds = map.getBounds();
     var zoom = map.getZoom();
     var filterKey = getFilterKey();
+    var padded = bounds.pad(0.2);
 
-    if (lastFetchCenter && filterKey === lastFilterKey &&
-        zoom === lastFetchZoom &&
-        center.distanceTo(lastFetchCenter) < 500 &&
-        Date.now() - lastFetchTime < CACHE_TTL) {
+    // Skip if we already fetched all grid cells in this area
+    if (allCellsFetched(padded, filterKey, zoom)) {
       return;
     }
 
-    var padded = bounds.pad(0.2);
     var query = buildQuery(bboxString(padded));
 
     if (!query) {
@@ -331,12 +353,8 @@
       .then(function (data) {
         hideLoading();
         mergeElements(data.elements || []);
-        lastFetchCenter = map.getCenter();
-        lastFetchZoom = map.getZoom();
-        lastFilterKey = filterKey;
-        lastFetchTime = Date.now();
+        markFetched(padded, filterKey, zoom);
         renderShops(lastElements);
-        // Prefetch surrounding areas in background
         prefetchSurroundings(bounds);
       })
       .catch(function (err) {
@@ -362,6 +380,8 @@
     if (prefetchAbort) prefetchAbort.abort();
     prefetchAbort = new AbortController();
     var signal = prefetchAbort.signal;
+    var filterKey = getFilterKey();
+    var zoom = map.getZoom();
 
     var lat = bounds.getNorth() - bounds.getSouth();
     var lng = bounds.getEast() - bounds.getWest();
@@ -373,19 +393,24 @@
       [-lng, 0],   // W
     ];
 
-    var queue = offsets.map(function (off) {
+    // Build queue, skip tiles we already fetched
+    var queue = [];
+    offsets.forEach(function (off) {
       var shifted = L.latLngBounds(
         [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
         [bounds.getNorth() + off[1], bounds.getEast() + off[0]]
       );
-      return buildQuery(bboxString(shifted));
-    }).filter(Boolean);
+      if (allCellsFetched(shifted, filterKey, zoom)) return;
+      var query = buildQuery(bboxString(shifted));
+      if (query) queue.push({ query: query, bounds: shifted });
+    });
 
     function runNext(idx) {
       if (idx >= queue.length || signal.aborted) return;
-      fireQuery(queue[idx], signal)
+      fireQuery(queue[idx].query, signal)
         .then(function (data) {
           if (signal.aborted) return;
+          markFetched(queue[idx].bounds, filterKey, zoom);
           if (data && data.elements && data.elements.length > 0) {
             mergeElements(data.elements);
             renderShops(lastElements);
