@@ -513,9 +513,11 @@
   }
 
   // --- Main entry point ---
+  var MIN_FETCH_ZOOM = 15; // ~80% of max zoom (19)
+
   function fetchCoffeeShops() {
     var filterKey = getFilterKey();
-    if (!filterKey) {
+    if (!filterKey || map.getZoom() < MIN_FETCH_ZOOM) {
       clearMarkers();
       invalidateCache();
       return;
