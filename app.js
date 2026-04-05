@@ -217,12 +217,12 @@
 
   var CELL_SIZE = 0.005;      // ~500m grid
   var CELL_TTL = 60 * 60 * 1000; // 1 hour
-  var MAX_CONCURRENT = 2;
-  var REQUEST_GAP = 1000;     // ms between starting new requests
-  var RETRY_COOLDOWN = 30000; // 30s before retrying a failed cell
+  var MAX_CONCURRENT = 3;
+  var REQUEST_GAP = 300;      // ms between starting new requests (cache HITs are instant)
+  var RETRY_COOLDOWN = 20000; // 20s before retrying a failed cell
   var MAX_RETRY = 3;
-  var PREFETCH_RINGS = 2;     // how many rings of cells beyond viewport to enqueue
-  var MAX_ELEMENTS = 2000;
+  var PREFETCH_RINGS = 3;     // rings of cells beyond viewport to enqueue
+  var MAX_ELEMENTS = 3000;
 
   // Cell states: 'fetched' | 'pending' | 'failed'
   // Cells not in the map are unfetched

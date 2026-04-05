@@ -79,14 +79,14 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Cache miss — fetch from Overpass with 10s timeout, one retry on 429
+    // Cache miss — fetch from Overpass with 20s timeout, one retry on 429
     const overpassUrl = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(normalized);
     let res: Response | null = null;
     const delays = [0, 3000];
     for (const delay of delays) {
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
       const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 10000);
+      const timer = setTimeout(() => ac.abort(), 20000);
       try {
         res = await fetch(overpassUrl, { signal: ac.signal });
       } catch (e: unknown) {
