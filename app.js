@@ -207,35 +207,30 @@
   }
 
   // =========================================================================
-  // Grid-based background fetch worker
+  // Region-based fetch system with background worker
   // =========================================================================
-  // Each grid cell is ~0.01 degrees (~1km), matching the edge function's
-  // bbox normalization. The worker continuously picks the closest unfetched
-  // cell to the viewport center, fetches it, and moves on. When the user
-  // pans, the queue dynamically reorders so nearby cells always come first.
+  // Fetches whole viewport as ONE request (not split into cells).
+  // Uses a grid for TRACKING which areas are covered (to avoid re-fetching).
+  // Background worker prefetches surrounding regions one at a time.
   // =========================================================================
 
-  var CELL_SIZE = 0.005;      // ~500m grid
+  var CELL_SIZE = 0.005;        // ~500m tracking grid
   var CELL_TTL = 60 * 60 * 1000; // 1 hour
-  var MAX_CONCURRENT = 2;
-  var BASE_GAP = 300;         // ms between requests when things are healthy
-  var currentGap = BASE_GAP;  // adaptive: increases on errors, decreases on success
-  var RETRY_COOLDOWN_VIEWPORT = 2000;  // 2s retry for cells in/near viewport
-  var RETRY_COOLDOWN_BACKGROUND = 15000; // 15s retry for distant cells
-  var MAX_RETRY = 5;
-  var PREFETCH_RINGS = 3;     // rings of cells beyond viewport to enqueue
   var MAX_ELEMENTS = 3000;
-  var consecutiveErrors = 0;
-  var retryWakeTimer = null;  // timer to wake worker when cooldowns expire
+  var MAX_RETRY = 3;
 
-  // Cell states: 'fetched' | 'pending' | 'failed'
-  // Cells not in the map are unfetched
-  var cellStates = {};  // "cx,cy" -> { state, time, attempts, filterKey, zoom }
   var lastElements = [];
   var elementIndex = {};
-  var activeRequests = 0;
-  var workerRunning = false;
+
+  // Grid tracks which cells are covered — but queries are region-sized, not cell-sized
+  var cellStates = {};  // "cx,cy" -> { time, filterKey, zoom }
+
+  // Region queue: viewport + N/E/S/W prefetch, sorted by distance
+  var regionQueue = [];   // [{ bounds, filterKey, zoom, attempts, failTime, isViewport }]
+  var activeRequest = false;
   var workerTimer = null;
+  var retryWakeTimer = null;
+  var consecutiveErrors = 0;
 
   function getFilterKey() {
     return ($filterCafe.checked ? 'c' : '') +
@@ -243,34 +238,44 @@
            ($filterRoastery.checked ? 'r' : '');
   }
 
-  // --- Cell coordinate helpers ---
-  function cellCoord(lat, lng) {
-    return { cx: Math.floor(lng / CELL_SIZE), cy: Math.floor(lat / CELL_SIZE) };
-  }
-
+  // --- Grid helpers (for tracking, not querying) ---
   function cellId(cx, cy) { return cx + ',' + cy; }
 
-  function cellCenter(cx, cy) {
-    return { lat: (cy + 0.5) * CELL_SIZE, lng: (cx + 0.5) * CELL_SIZE };
+  function markCellsFetched(bounds, filterKey, zoom) {
+    var now = Date.now();
+    var s = bounds.getSouth(), n = bounds.getNorth();
+    var w = bounds.getWest(), e = bounds.getEast();
+    for (var lat = Math.floor(s / CELL_SIZE); lat * CELL_SIZE <= n; lat++) {
+      for (var lng = Math.floor(w / CELL_SIZE); lng * CELL_SIZE <= e; lng++) {
+        cellStates[cellId(lng, lat)] = { time: now, filterKey: filterKey, zoom: zoom };
+      }
+    }
+    saveCellStates();
   }
 
-  function cellBounds(cx, cy) {
-    return L.latLngBounds(
-      [cy * CELL_SIZE, cx * CELL_SIZE],
-      [(cy + 1) * CELL_SIZE, (cx + 1) * CELL_SIZE]
-    );
+  function regionFullyCovered(bounds, filterKey, zoom) {
+    var now = Date.now();
+    var s = bounds.getSouth(), n = bounds.getNorth();
+    var w = bounds.getWest(), e = bounds.getEast();
+    for (var lat = Math.floor(s / CELL_SIZE); lat * CELL_SIZE <= n; lat++) {
+      for (var lng = Math.floor(w / CELL_SIZE); lng * CELL_SIZE <= e; lng++) {
+        var c = cellStates[cellId(lng, lat)];
+        if (!c || c.filterKey !== filterKey || c.zoom !== zoom || now - c.time >= CELL_TTL) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
-  // --- Persistence (localStorage) ---
+  // --- Persistence ---
   function saveCellStates() {
     try {
       var toSave = {};
       var now = Date.now();
       for (var key in cellStates) {
         var c = cellStates[key];
-        if (c.state === 'fetched' && now - c.time < CELL_TTL) {
-          toSave[key] = { state: 'fetched', time: c.time, filterKey: c.filterKey, zoom: c.zoom };
-        }
+        if (now - c.time < CELL_TTL) toSave[key] = c;
       }
       localStorage.setItem('cm_cells', JSON.stringify(toSave));
     } catch (e) {}
@@ -283,194 +288,162 @@
       var parsed = JSON.parse(stored);
       var now = Date.now();
       for (var key in parsed) {
-        var c = parsed[key];
-        if (c.state === 'fetched' && now - c.time < CELL_TTL) {
-          cellStates[key] = c;
-        }
+        if (now - parsed[key].time < CELL_TTL) cellStates[key] = parsed[key];
       }
     } catch (e) {}
   }
 
-  // --- Collect all cells that need fetching (viewport + surrounding rings) ---
-  // Returns { needed: [...], nextRetryIn: ms|null }
-  function collectNeededCells(filterKey, zoom) {
-    var bounds = map.getBounds().pad(0.1);
-    var sw = cellCoord(bounds.getSouth(), bounds.getWest());
-    var ne = cellCoord(bounds.getNorth(), bounds.getEast());
-
-    var minCx = sw.cx - PREFETCH_RINGS;
-    var maxCx = ne.cx + PREFETCH_RINGS;
-    var minCy = sw.cy - PREFETCH_RINGS;
-    var maxCy = ne.cy + PREFETCH_RINGS;
-
-    var needed = [];
-    var now = Date.now();
-    var earliestRetry = null;
-
-    // Viewport cell range (for distance-based cooldown)
-    var vBounds = map.getBounds();
-    var vSw = cellCoord(vBounds.getSouth(), vBounds.getWest());
-    var vNe = cellCoord(vBounds.getNorth(), vBounds.getEast());
-
-    for (var cy = minCy; cy <= maxCy; cy++) {
-      for (var cx = minCx; cx <= maxCx; cx++) {
-        var id = cellId(cx, cy);
-        var c = cellStates[id];
-
-        if (!c || c.filterKey !== filterKey || c.zoom !== zoom) {
-          needed.push({ cx: cx, cy: cy });
-          continue;
-        }
-        if (c.state === 'fetched' && now - c.time < CELL_TTL) continue;
-        if (c.state === 'pending') continue;
-        if (c.state === 'failed') {
-          if (c.attempts >= MAX_RETRY) continue;
-          // Use shorter cooldown for viewport cells, longer for distant ones
-          var inViewport = cx >= vSw.cx && cx <= vNe.cx && cy >= vSw.cy && cy <= vNe.cy;
-          var cooldown = inViewport ? RETRY_COOLDOWN_VIEWPORT : RETRY_COOLDOWN_BACKGROUND;
-          var remaining = cooldown - (now - c.time);
-          if (remaining > 0) {
-            if (earliestRetry === null || remaining < earliestRetry) {
-              earliestRetry = remaining;
-            }
-            continue;
-          }
-        }
-        needed.push({ cx: cx, cy: cy });
-      }
-    }
-    return { needed: needed, nextRetryIn: earliestRetry };
-  }
-
-  // --- Sort cells by distance from viewport center ---
-  function sortByDistanceFromCenter(cells) {
-    var center = map.getCenter();
-    var clat = center.lat;
-    var clng = center.lng;
-    cells.sort(function (a, b) {
-      var ac = cellCenter(a.cx, a.cy);
-      var bc = cellCenter(b.cx, b.cy);
-      var da = (ac.lat - clat) * (ac.lat - clat) + (ac.lng - clng) * (ac.lng - clng);
-      var db = (bc.lat - clat) * (bc.lat - clat) + (bc.lng - clng) * (bc.lng - clng);
-      return da - db;
-    });
-    return cells;
-  }
-
-  // --- Check if viewport cells are all fetched (for loading indicator) ---
-  function viewportFullyCovered(filterKey, zoom) {
-    var bounds = map.getBounds();
-    var sw = cellCoord(bounds.getSouth(), bounds.getWest());
-    var ne = cellCoord(bounds.getNorth(), bounds.getEast());
-    for (var cy = sw.cy; cy <= ne.cy; cy++) {
-      for (var cx = sw.cx; cx <= ne.cx; cx++) {
-        var c = cellStates[cellId(cx, cy)];
-        if (!c || c.filterKey !== filterKey || c.zoom !== zoom ||
-            c.state !== 'fetched' || Date.now() - c.time >= CELL_TTL) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-
-  // --- Build Overpass query for a single cell ---
-  function buildCellQuery(cx, cy) {
-    var s = (cy * CELL_SIZE).toFixed(6);
-    var w = (cx * CELL_SIZE).toFixed(6);
-    var n = ((cy + 1) * CELL_SIZE).toFixed(6);
-    var e = ((cx + 1) * CELL_SIZE).toFixed(6);
-    var bbox = s + ',' + w + ',' + n + ',' + e;
-    return buildQuery(bbox);
-  }
-
-  // --- The background worker ---
-  function wakeWorker() {
-    if (workerRunning) return;
-    workerRunning = true;
-    runWorkerStep();
-  }
-
-  function runWorkerStep() {
+  // --- Build the queue: viewport first, then N/E/S/W sorted by distance ---
+  function buildRegionQueue() {
     var filterKey = getFilterKey();
     var zoom = map.getZoom();
+    var bounds = map.getBounds();
+    var padded = bounds.pad(0.3);
+    var center = map.getCenter();
 
-    // Show/hide loading based on viewport coverage
-    if (!viewportFullyCovered(filterKey, zoom)) {
-      showLoading();
-    } else {
-      hideLoading();
+    // Clear old queue
+    regionQueue = [];
+
+    // Viewport region (highest priority)
+    if (!regionFullyCovered(padded, filterKey, zoom)) {
+      regionQueue.push({
+        bounds: padded, filterKey: filterKey, zoom: zoom,
+        attempts: 0, failTime: 0, isViewport: true
+      });
     }
 
-    // Collect and sort needed cells
-    var result = collectNeededCells(filterKey, zoom);
-    var needed = sortByDistanceFromCenter(result.needed);
+    // Surrounding regions: N, NE, E, SE, S, SW, W, NW
+    var latSpan = bounds.getNorth() - bounds.getSouth();
+    var lngSpan = bounds.getEast() - bounds.getWest();
+    var offsets = [
+      [0, latSpan], [lngSpan, latSpan], [lngSpan, 0], [lngSpan, -latSpan],
+      [0, -latSpan], [-lngSpan, -latSpan], [-lngSpan, 0], [-lngSpan, latSpan]
+    ];
 
-    if (needed.length === 0 || activeRequests >= MAX_CONCURRENT) {
-      workerRunning = false;
-      hideLoading();
-      saveCellStates();
-      // Schedule wake-up when cooldowns expire
-      if (result.nextRetryIn !== null && result.nextRetryIn > 0) {
-        clearTimeout(retryWakeTimer);
-        retryWakeTimer = setTimeout(function () {
-          wakeWorker();
-        }, result.nextRetryIn + 100);
+    var surroundings = [];
+    offsets.forEach(function (off) {
+      var shifted = L.latLngBounds(
+        [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
+        [bounds.getNorth() + off[1], bounds.getEast() + off[0]]
+      );
+      if (regionFullyCovered(shifted, filterKey, zoom)) return;
+      var sc = shifted.getCenter();
+      var dist = (sc.lat - center.lat) * (sc.lat - center.lat) +
+                 (sc.lng - center.lng) * (sc.lng - center.lng);
+      surroundings.push({ bounds: shifted, dist: dist });
+    });
+
+    // Sort by distance from center
+    surroundings.sort(function (a, b) { return a.dist - b.dist; });
+    surroundings.forEach(function (s) {
+      regionQueue.push({
+        bounds: s.bounds, filterKey: filterKey, zoom: s.zoom || zoom,
+        attempts: 0, failTime: 0, isViewport: false
+      });
+    });
+  }
+
+  // --- Worker: processes one region at a time ---
+  function wakeWorker() {
+    clearTimeout(workerTimer);
+    clearTimeout(retryWakeTimer);
+    buildRegionQueue();
+    if (!activeRequest) runNextRegion();
+  }
+
+  function runNextRegion() {
+    if (activeRequest) return;
+
+    // Re-sort queue by distance from current center (user may have panned)
+    var center = map.getCenter();
+    regionQueue.sort(function (a, b) {
+      if (a.isViewport !== b.isViewport) return a.isViewport ? -1 : 1;
+      var ac = a.bounds.getCenter();
+      var bc = b.bounds.getCenter();
+      var da = (ac.lat - center.lat) * (ac.lat - center.lat) + (ac.lng - center.lng) * (ac.lng - center.lng);
+      var db = (bc.lat - center.lat) * (bc.lat - center.lat) + (bc.lng - center.lng) * (bc.lng - center.lng);
+      return da - db;
+    });
+
+    // Find next region that's ready (skip covered, respect cooldowns)
+    var now = Date.now();
+    var nextRegion = null;
+    var nextIdx = -1;
+    var earliestRetry = null;
+
+    for (var i = 0; i < regionQueue.length; i++) {
+      var r = regionQueue[i];
+      // Already covered (by another overlapping fetch)?
+      if (regionFullyCovered(r.bounds, r.filterKey, r.zoom)) {
+        regionQueue.splice(i, 1); i--; continue;
       }
+      // In cooldown?
+      if (r.failTime > 0) {
+        var cooldown = r.isViewport ? 3000 : 10000;
+        var wait = cooldown - (now - r.failTime);
+        if (wait > 0) {
+          if (earliestRetry === null || wait < earliestRetry) earliestRetry = wait;
+          continue;
+        }
+      }
+      nextRegion = r;
+      nextIdx = i;
+      break;
+    }
+
+    if (!nextRegion) {
+      // Nothing to do now — schedule wake for retries
+      if (earliestRetry !== null) {
+        retryWakeTimer = setTimeout(runNextRegion, earliestRetry + 100);
+      }
+      hideLoading();
       return;
     }
 
-    // Pick the closest cell
-    var cell = needed[0];
-    var id = cellId(cell.cx, cell.cy);
-    var existing = cellStates[id];
-    var attempts = (existing && existing.state === 'failed') ? existing.attempts : 0;
+    if (nextRegion.isViewport) showLoading();
 
-    // Mark pending
-    cellStates[id] = { state: 'pending', filterKey: filterKey, zoom: zoom, time: Date.now(), attempts: attempts };
-
-    var query = buildCellQuery(cell.cx, cell.cy);
+    activeRequest = true;
+    var query = buildQuery(bboxString(nextRegion.bounds));
     if (!query) {
-      // No filters selected — skip
-      cellStates[id] = { state: 'fetched', filterKey: filterKey, zoom: zoom, time: Date.now(), attempts: 0 };
-      workerTimer = setTimeout(runWorkerStep, 50);
+      regionQueue.splice(nextIdx, 1);
+      activeRequest = false;
+      runNextRegion();
       return;
     }
-
-    activeRequests++;
 
     fireQuery(query)
       .then(function (data) {
-        cellStates[id] = { state: 'fetched', filterKey: filterKey, zoom: zoom, time: Date.now(), attempts: 0 };
+        markCellsFetched(nextRegion.bounds, nextRegion.filterKey, nextRegion.zoom);
+        regionQueue.splice(regionQueue.indexOf(nextRegion), 1);
         if (data && data.elements && data.elements.length > 0) {
           mergeElements(data.elements);
           renderShops(lastElements);
         }
-        // Success: reduce gap back towards base
         consecutiveErrors = 0;
-        currentGap = BASE_GAP;
+        if (nextRegion.isViewport) hideLoading();
       })
       .catch(function (err) {
-        console.error('Cell fetch error (' + id + '):', err.message);
-        cellStates[id] = { state: 'failed', filterKey: filterKey, zoom: zoom, time: Date.now(), attempts: attempts + 1 };
-        // Error: exponential backoff — double the gap, cap at 15s
+        if (err.name === 'AbortError') return;
+        console.error('Region fetch error:', err.message);
+        nextRegion.attempts++;
+        nextRegion.failTime = Date.now();
+        if (nextRegion.attempts >= MAX_RETRY) {
+          regionQueue.splice(regionQueue.indexOf(nextRegion), 1);
+        }
         consecutiveErrors++;
-        currentGap = Math.min(BASE_GAP * Math.pow(2, consecutiveErrors), 15000);
-        console.log('Backing off: next request in ' + currentGap + 'ms');
+        if (nextRegion.isViewport) hideLoading();
       })
       .then(function () {
-        activeRequests--;
-        if (viewportFullyCovered(filterKey, zoom)) hideLoading();
-        workerTimer = setTimeout(runWorkerStep, currentGap);
+        activeRequest = false;
+        // Gap: fast when healthy, slower on errors
+        var gap = consecutiveErrors > 0
+          ? Math.min(2000 * Math.pow(2, consecutiveErrors - 1), 15000)
+          : 500;
+        workerTimer = setTimeout(runNextRegion, gap);
       });
-
-    // If we can run more concurrent, only do so when healthy (no recent errors)
-    if (activeRequests < MAX_CONCURRENT && needed.length > 1 && consecutiveErrors === 0) {
-      setTimeout(runWorkerStep, 50);
-    }
   }
 
-  // --- Main entry point from map events ---
+  // --- Main entry point ---
   function fetchCoffeeShops() {
     var filterKey = getFilterKey();
     if (!filterKey) {
@@ -483,12 +456,11 @@
 
   function invalidateCache(clearData) {
     cellStates = {};
+    regionQueue = [];
     clearTimeout(workerTimer);
     clearTimeout(retryWakeTimer);
-    workerRunning = false;
-    activeRequests = 0;
+    activeRequest = false;
     consecutiveErrors = 0;
-    currentGap = BASE_GAP;
     try { localStorage.removeItem('cm_cells'); } catch (e) {}
     if (clearData) {
       clearElements();
@@ -535,9 +507,18 @@
     return '[out:json][timeout:15];(' + filters.join('') + ');out center;';
   }
 
+  // Snap bbox to grid so queries always align → same cache keys
+  function snapToGrid(v, roundDown) {
+    return roundDown
+      ? (Math.floor(v / CELL_SIZE) * CELL_SIZE).toFixed(3)
+      : (Math.ceil(v / CELL_SIZE) * CELL_SIZE).toFixed(3);
+  }
+
   function bboxString(bounds) {
-    return bounds.getSouth().toFixed(6) + ',' + bounds.getWest().toFixed(6) + ',' +
-           bounds.getNorth().toFixed(6) + ',' + bounds.getEast().toFixed(6);
+    return snapToGrid(bounds.getSouth(), true) + ',' +
+           snapToGrid(bounds.getWest(), true) + ',' +
+           snapToGrid(bounds.getNorth(), false) + ',' +
+           snapToGrid(bounds.getEast(), false);
   }
 
   function fireQuery(query, signal) {
