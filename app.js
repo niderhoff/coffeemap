@@ -1090,8 +1090,8 @@
       items.forEach(function (li, i) { li.classList.toggle('selected', i === selectedIdx); });
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (selectedIdx >= 0 && $suggestions._results) {
-        selectSuggestion($suggestions._results[selectedIdx]);
+      if ($suggestions._results && $suggestions._results.length > 0) {
+        selectSuggestion($suggestions._results[Math.max(selectedIdx, 0)]);
       } else {
         doSearch();
       }
