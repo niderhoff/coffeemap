@@ -281,25 +281,21 @@
 
   function fireQuery(query, signal) {
     var proxyUrl = SUPABASE_URL + '/functions/v1/overpass-proxy';
-    var directUrl = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
 
-    if (sb) {
-      return fetch(proxyUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
-        body: JSON.stringify({ query: query }),
-        signal: signal,
-      }).then(function (res) {
-        if (!res.ok) throw new Error('Proxy error ' + res.status);
-        return res.json();
-      }).catch(function (err) {
-        if (err.name === 'AbortError') throw err;
-        return fetch(directUrl, { signal: signal })
-          .then(function (res) { return res.json(); });
-      });
-    }
-    return fetch(directUrl, { signal: signal })
-      .then(function (res) { return res.json(); });
+    return fetch(proxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
+      body: JSON.stringify({ query: query }),
+      signal: signal,
+    }).then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (body) {
+          throw new Error('Proxy error ' + res.status + ': ' + body);
+        });
+      }
+      console.log('X-Cache:', res.headers.get('X-Cache'));
+      return res.json();
+    });
   }
 
   function fetchCoffeeShops() {
