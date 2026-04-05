@@ -206,19 +206,32 @@
     );
   }
 
-  // --- Request manager: tracks all fetched areas, queues requests, retries failures ---
-  var AREA_TTL = 60 * 60 * 1000; // 1 hour
+  // =========================================================================
+  // Grid-based background fetch worker
+  // =========================================================================
+  // Each grid cell is ~0.01 degrees (~1km), matching the edge function's
+  // bbox normalization. The worker continuously picks the closest unfetched
+  // cell to the viewport center, fetches it, and moves on. When the user
+  // pans, the queue dynamically reorders so nearby cells always come first.
+  // =========================================================================
+
+  var CELL_SIZE = 0.01;       // ~1km grid
+  var CELL_TTL = 60 * 60 * 1000; // 1 hour
   var MAX_CONCURRENT = 2;
-  var RETRY_DELAY = 30000; // 30s before retrying failed areas
+  var REQUEST_GAP = 1000;     // ms between starting new requests
+  var RETRY_COOLDOWN = 30000; // 30s before retrying a failed cell
+  var MAX_RETRY = 3;
+  var PREFETCH_RINGS = 2;     // how many rings of cells beyond viewport to enqueue
   var MAX_ELEMENTS = 2000;
 
+  // Cell states: 'fetched' | 'pending' | 'failed'
+  // Cells not in the map are unfetched
+  var cellStates = {};  // "cx,cy" -> { state, time, attempts, filterKey, zoom }
   var lastElements = [];
-  var elementIndex = {}; // type/id -> true
-  var fetchedAreas = []; // [{s,w,n,e,filterKey,zoom,time}]
-  var failedAreas = [];  // [{s,w,n,e,filterKey,zoom,failTime,attempts}]
-  var requestQueue = []; // [{query,bounds,filterKey,zoom,priority,signal}]
+  var elementIndex = {};
   var activeRequests = 0;
-  var globalAbort = null;
+  var workerRunning = false;
+  var workerTimer = null;
 
   function getFilterKey() {
     return ($filterCafe.checked ? 'c' : '') +
@@ -226,83 +239,234 @@
            ($filterRoastery.checked ? 'r' : '');
   }
 
-  // Persist fetched areas to localStorage
-  function saveFetchedAreas() {
+  // --- Cell coordinate helpers ---
+  function cellCoord(lat, lng) {
+    return { cx: Math.floor(lng / CELL_SIZE), cy: Math.floor(lat / CELL_SIZE) };
+  }
+
+  function cellId(cx, cy) { return cx + ',' + cy; }
+
+  function cellCenter(cx, cy) {
+    return { lat: (cy + 0.5) * CELL_SIZE, lng: (cx + 0.5) * CELL_SIZE };
+  }
+
+  function cellBounds(cx, cy) {
+    return L.latLngBounds(
+      [cy * CELL_SIZE, cx * CELL_SIZE],
+      [(cy + 1) * CELL_SIZE, (cx + 1) * CELL_SIZE]
+    );
+  }
+
+  // --- Persistence (localStorage) ---
+  function saveCellStates() {
     try {
-      localStorage.setItem('cm_areas', JSON.stringify(fetchedAreas));
+      var toSave = {};
+      var now = Date.now();
+      for (var key in cellStates) {
+        var c = cellStates[key];
+        if (c.state === 'fetched' && now - c.time < CELL_TTL) {
+          toSave[key] = { state: 'fetched', time: c.time, filterKey: c.filterKey, zoom: c.zoom };
+        }
+      }
+      localStorage.setItem('cm_cells', JSON.stringify(toSave));
     } catch (e) {}
   }
 
-  function loadFetchedAreas() {
+  function loadCellStates() {
     try {
-      var stored = localStorage.getItem('cm_areas');
-      if (stored) {
-        var now = Date.now();
-        fetchedAreas = JSON.parse(stored).filter(function (a) {
-          return now - a.time < AREA_TTL;
-        });
+      var stored = localStorage.getItem('cm_cells');
+      if (!stored) return;
+      var parsed = JSON.parse(stored);
+      var now = Date.now();
+      for (var key in parsed) {
+        var c = parsed[key];
+        if (c.state === 'fetched' && now - c.time < CELL_TTL) {
+          cellStates[key] = c;
+        }
       }
     } catch (e) {}
   }
 
-  // Check if bounds is fully covered by fetched areas
-  function isCovered(bounds, filterKey, zoom) {
-    var now = Date.now();
-    var s = bounds.getSouth(), w = bounds.getWest();
-    var n = bounds.getNorth(), e = bounds.getEast();
-    // Sample points across the bounds to check coverage
-    var step = 0.005; // ~500m
-    for (var lat = s; lat <= n; lat += step) {
-      for (var lng = w; lng <= e; lng += step) {
-        var covered = false;
-        for (var i = 0; i < fetchedAreas.length; i++) {
-          var a = fetchedAreas[i];
-          if (a.filterKey !== filterKey) continue;
-          if (a.zoom !== zoom) continue;
-          if (now - a.time >= AREA_TTL) continue;
-          if (lat >= a.s && lat <= a.n && lng >= a.w && lng <= a.e) {
-            covered = true;
-            break;
-          }
+  // --- Check if a cell needs fetching ---
+  function cellNeedsFetch(cx, cy, filterKey, zoom) {
+    var id = cellId(cx, cy);
+    var c = cellStates[id];
+    if (!c) return true; // never fetched
+    if (c.filterKey !== filterKey || c.zoom !== zoom) return true; // stale filter/zoom
+    if (c.state === 'fetched' && Date.now() - c.time < CELL_TTL) return false;
+    if (c.state === 'pending') return false;
+    if (c.state === 'failed') {
+      if (c.attempts >= MAX_RETRY) return false;
+      if (Date.now() - c.time < RETRY_COOLDOWN) return false;
+      return true; // retry
+    }
+    return true;
+  }
+
+  // --- Collect all cells that need fetching (viewport + surrounding rings) ---
+  function collectNeededCells(filterKey, zoom) {
+    var bounds = map.getBounds().pad(0.1);
+    var sw = cellCoord(bounds.getSouth(), bounds.getWest());
+    var ne = cellCoord(bounds.getNorth(), bounds.getEast());
+
+    // Expand by PREFETCH_RINGS cells in each direction
+    var minCx = sw.cx - PREFETCH_RINGS;
+    var maxCx = ne.cx + PREFETCH_RINGS;
+    var minCy = sw.cy - PREFETCH_RINGS;
+    var maxCy = ne.cy + PREFETCH_RINGS;
+
+    var needed = [];
+    for (var cy = minCy; cy <= maxCy; cy++) {
+      for (var cx = minCx; cx <= maxCx; cx++) {
+        if (cellNeedsFetch(cx, cy, filterKey, zoom)) {
+          needed.push({ cx: cx, cy: cy });
         }
-        if (!covered) return false;
+      }
+    }
+    return needed;
+  }
+
+  // --- Sort cells by distance from viewport center ---
+  function sortByDistanceFromCenter(cells) {
+    var center = map.getCenter();
+    var clat = center.lat;
+    var clng = center.lng;
+    cells.sort(function (a, b) {
+      var ac = cellCenter(a.cx, a.cy);
+      var bc = cellCenter(b.cx, b.cy);
+      var da = (ac.lat - clat) * (ac.lat - clat) + (ac.lng - clng) * (ac.lng - clng);
+      var db = (bc.lat - clat) * (bc.lat - clat) + (bc.lng - clng) * (bc.lng - clng);
+      return da - db;
+    });
+    return cells;
+  }
+
+  // --- Check if viewport cells are all fetched (for loading indicator) ---
+  function viewportFullyCovered(filterKey, zoom) {
+    var bounds = map.getBounds();
+    var sw = cellCoord(bounds.getSouth(), bounds.getWest());
+    var ne = cellCoord(bounds.getNorth(), bounds.getEast());
+    for (var cy = sw.cy; cy <= ne.cy; cy++) {
+      for (var cx = sw.cx; cx <= ne.cx; cx++) {
+        var c = cellStates[cellId(cx, cy)];
+        if (!c || c.filterKey !== filterKey || c.zoom !== zoom ||
+            c.state !== 'fetched' || Date.now() - c.time >= CELL_TTL) {
+          return false;
+        }
       }
     }
     return true;
   }
 
-  function markAreaFetched(bounds, filterKey, zoom) {
-    fetchedAreas.push({
-      s: bounds.getSouth(), w: bounds.getWest(),
-      n: bounds.getNorth(), e: bounds.getEast(),
-      filterKey: filterKey, zoom: zoom, time: Date.now()
-    });
-    // Evict expired
-    var now = Date.now();
-    fetchedAreas = fetchedAreas.filter(function (a) { return now - a.time < AREA_TTL; });
-    saveFetchedAreas();
+  // --- Build Overpass query for a single cell ---
+  function buildCellQuery(cx, cy) {
+    var s = (cy * CELL_SIZE).toFixed(6);
+    var w = (cx * CELL_SIZE).toFixed(6);
+    var n = ((cy + 1) * CELL_SIZE).toFixed(6);
+    var e = ((cx + 1) * CELL_SIZE).toFixed(6);
+    var bbox = s + ',' + w + ',' + n + ',' + e;
+    return buildQuery(bbox);
   }
 
-  function markAreaFailed(bounds, filterKey, zoom) {
-    failedAreas.push({
-      s: bounds.getSouth(), w: bounds.getWest(),
-      n: bounds.getNorth(), e: bounds.getEast(),
-      filterKey: filterKey, zoom: zoom,
-      failTime: Date.now(), attempts: 1
-    });
+  // --- The background worker ---
+  function wakeWorker() {
+    if (workerRunning) return;
+    workerRunning = true;
+    runWorkerStep();
+  }
+
+  function runWorkerStep() {
+    var filterKey = getFilterKey();
+    var zoom = map.getZoom();
+
+    // Show/hide loading based on viewport coverage
+    if (!viewportFullyCovered(filterKey, zoom)) {
+      showLoading();
+    } else {
+      hideLoading();
+    }
+
+    // Collect and sort needed cells
+    var needed = collectNeededCells(filterKey, zoom);
+    needed = sortByDistanceFromCenter(needed);
+
+    if (needed.length === 0 || activeRequests >= MAX_CONCURRENT) {
+      workerRunning = false;
+      hideLoading();
+      // Save periodically
+      saveCellStates();
+      return;
+    }
+
+    // Pick the closest cell
+    var cell = needed[0];
+    var id = cellId(cell.cx, cell.cy);
+    var existing = cellStates[id];
+    var attempts = (existing && existing.state === 'failed') ? existing.attempts : 0;
+
+    // Mark pending
+    cellStates[id] = { state: 'pending', filterKey: filterKey, zoom: zoom, time: Date.now(), attempts: attempts };
+
+    var query = buildCellQuery(cell.cx, cell.cy);
+    if (!query) {
+      // No filters selected — skip
+      cellStates[id] = { state: 'fetched', filterKey: filterKey, zoom: zoom, time: Date.now(), attempts: 0 };
+      workerTimer = setTimeout(runWorkerStep, 50);
+      return;
+    }
+
+    activeRequests++;
+
+    fireQuery(query)
+      .then(function (data) {
+        cellStates[id] = { state: 'fetched', filterKey: filterKey, zoom: zoom, time: Date.now(), attempts: 0 };
+        if (data && data.elements && data.elements.length > 0) {
+          mergeElements(data.elements);
+          renderShops(lastElements);
+        }
+      })
+      .catch(function (err) {
+        console.error('Cell fetch error (' + id + '):', err.message);
+        cellStates[id] = { state: 'failed', filterKey: filterKey, zoom: zoom, time: Date.now(), attempts: attempts + 1 };
+      })
+      .then(function () {
+        activeRequests--;
+        // Update loading state
+        if (viewportFullyCovered(filterKey, zoom)) hideLoading();
+        // Continue worker after gap
+        workerTimer = setTimeout(runWorkerStep, REQUEST_GAP);
+      });
+
+    // If we can run more concurrent requests, schedule another step immediately
+    if (activeRequests < MAX_CONCURRENT && needed.length > 1) {
+      setTimeout(runWorkerStep, 50);
+    }
+  }
+
+  // --- Main entry point from map events ---
+  function fetchCoffeeShops() {
+    var filterKey = getFilterKey();
+    if (!filterKey) {
+      clearMarkers();
+      invalidateCache();
+      return;
+    }
+    wakeWorker();
   }
 
   function invalidateCache(clearData) {
-    fetchedAreas = [];
-    failedAreas = [];
-    requestQueue = [];
-    try { localStorage.removeItem('cm_areas'); } catch (e) {}
+    cellStates = {};
+    clearTimeout(workerTimer);
+    workerRunning = false;
+    activeRequests = 0;
+    try { localStorage.removeItem('cm_cells'); } catch (e) {}
     if (clearData) {
       clearElements();
       clearMarkers();
     }
   }
 
+  // --- Element management ---
   function mergeElements(newElements) {
     newElements.forEach(function (el) {
       var key = el.type + '/' + el.id;
@@ -364,142 +528,8 @@
     });
   }
 
-  // --- Request queue: max 2 concurrent, sequential drain ---
-  function enqueue(query, bounds, filterKey, zoom, priority, signal) {
-    requestQueue.push({ query: query, bounds: bounds, filterKey: filterKey, zoom: zoom, priority: priority, signal: signal });
-    // Sort: priority 0 (viewport) first, then 1 (prefetch), then 2 (retry)
-    requestQueue.sort(function (a, b) { return a.priority - b.priority; });
-    drainQueue();
-  }
-
-  function drainQueue() {
-    while (activeRequests < MAX_CONCURRENT && requestQueue.length > 0) {
-      var item = requestQueue.shift();
-      if (item.signal && item.signal.aborted) continue;
-      executeRequest(item);
-    }
-  }
-
-  function executeRequest(item) {
-    activeRequests++;
-    var isViewport = item.priority === 0;
-    if (isViewport) showLoading();
-
-    fireQuery(item.query, item.signal)
-      .then(function (data) {
-        if (item.signal && item.signal.aborted) return;
-        markAreaFetched(item.bounds, item.filterKey, item.zoom);
-        if (data && data.elements) {
-          mergeElements(data.elements);
-          renderShops(lastElements);
-        }
-      })
-      .catch(function (err) {
-        if (err.name === 'AbortError') return;
-        console.error('Fetch error:', err);
-        markAreaFailed(item.bounds, item.filterKey, item.zoom);
-      })
-      .then(function () {
-        activeRequests--;
-        if (isViewport) hideLoading();
-        // Small delay between requests to spread load
-        setTimeout(drainQueue, 800);
-      });
-  }
-
-  // --- Main fetch triggered by map move ---
-  function fetchCoffeeShops() {
-    var bounds = map.getBounds();
-    var zoom = map.getZoom();
-    var filterKey = getFilterKey();
-    var padded = bounds.pad(0.2);
-
-    if (isCovered(padded, filterKey, zoom)) {
-      retryFailedNearby();
-      return;
-    }
-
-    var query = buildQuery(bboxString(padded));
-    if (!query) {
-      clearMarkers();
-      invalidateCache();
-      return;
-    }
-
-    // Cancel previous viewport requests
-    if (globalAbort) globalAbort.abort();
-    globalAbort = new AbortController();
-    // Clear queued prefetches/retries (keep nothing stale)
-    requestQueue = requestQueue.filter(function (r) { return r.priority === 0; });
-
-    enqueue(query, padded, filterKey, zoom, 0, globalAbort.signal);
-
-    // Schedule prefetch after a short delay
-    clearTimeout(prefetchTimer);
-    prefetchTimer = setTimeout(function () {
-      schedulePrefetch(bounds, filterKey, zoom);
-    }, 1500);
-  }
-
-  // --- Prefetch surrounding areas ---
-  var prefetchTimer = null;
-
-  function schedulePrefetch(bounds, filterKey, zoom) {
-    if (!globalAbort || globalAbort.signal.aborted) return;
-    var signal = globalAbort.signal;
-
-    var latSpan = bounds.getNorth() - bounds.getSouth();
-    var lngSpan = bounds.getEast() - bounds.getWest();
-
-    var offsets = [
-      [0, latSpan], [lngSpan, 0], [0, -latSpan], [-lngSpan, 0] // N, E, S, W
-    ];
-
-    offsets.forEach(function (off) {
-      var shifted = L.latLngBounds(
-        [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
-        [bounds.getNorth() + off[1], bounds.getEast() + off[0]]
-      );
-      if (isCovered(shifted, filterKey, zoom)) return;
-      var query = buildQuery(bboxString(shifted));
-      if (query) enqueue(query, shifted, filterKey, zoom, 1, signal);
-    });
-  }
-
-  // --- Retry failed areas when user is nearby ---
-  function retryFailedNearby() {
-    if (!globalAbort || failedAreas.length === 0) return;
-    var signal = globalAbort.signal;
-    var now = Date.now();
-    var bounds = map.getBounds();
-    var filterKey = getFilterKey();
-    var zoom = map.getZoom();
-
-    var toRetry = [];
-    var remaining = [];
-    failedAreas.forEach(function (f) {
-      if (f.filterKey !== filterKey || f.zoom !== zoom) { remaining.push(f); return; }
-      if (now - f.failTime < RETRY_DELAY) { remaining.push(f); return; }
-      // Check if the failed area overlaps current viewport
-      var overlaps = !(f.e < bounds.getWest() || f.w > bounds.getEast() ||
-                       f.n < bounds.getSouth() || f.s > bounds.getNorth());
-      if (overlaps && f.attempts < 3) {
-        toRetry.push(f);
-      } else {
-        remaining.push(f);
-      }
-    });
-    failedAreas = remaining;
-
-    toRetry.forEach(function (f) {
-      var b = L.latLngBounds([f.s, f.w], [f.n, f.e]);
-      var query = buildQuery(bboxString(b));
-      if (query) enqueue(query, b, f.filterKey, f.zoom, 2, signal);
-    });
-  }
-
-  // Load persisted areas on startup
-  loadFetchedAreas();
+  // Load persisted cell states on startup
+  loadCellStates();
 
   // --- Render shop markers (incremental — never destroys existing markers) ---
   var markerIndex = {}; // osmId -> marker
