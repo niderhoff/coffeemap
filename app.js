@@ -221,9 +221,35 @@
            ($filterRoastery.checked ? 'r' : '');
   }
 
-  function invalidateCache() {
+  function invalidateCache(clearData) {
     lastFetchCenter = null;
     lastFilterKey = '';
+    if (clearData) clearElements();
+  }
+
+  // Merge new elements into lastElements, deduped by OSM type+id
+  var elementIndex = {}; // type/id -> true
+
+  var MAX_ELEMENTS = 500;
+
+  function mergeElements(newElements) {
+    newElements.forEach(function (el) {
+      var key = el.type + '/' + el.id;
+      if (!elementIndex[key]) {
+        elementIndex[key] = true;
+        lastElements.push(el);
+      }
+    });
+    // Cap to prevent unbounded memory growth — keep newest
+    if (lastElements.length > MAX_ELEMENTS) {
+      var removed = lastElements.splice(0, lastElements.length - MAX_ELEMENTS);
+      removed.forEach(function (el) { delete elementIndex[el.type + '/' + el.id]; });
+    }
+  }
+
+  function clearElements() {
+    lastElements = [];
+    elementIndex = {};
   }
 
   // --- Overpass API ---
@@ -303,7 +329,7 @@
     fireQuery(query, searchAbort.signal)
       .then(function (data) {
         hideLoading();
-        lastElements = data.elements || [];
+        mergeElements(data.elements || []);
         lastFetchCenter = map.getCenter();
         lastFetchZoom = map.getZoom();
         lastFilterKey = filterKey;
@@ -679,7 +705,7 @@
         hideLoading();
         if (results.length > 0) {
           const r = results[0];
-          invalidateCache();
+          invalidateCache(true);
           map.flyTo([parseFloat(r.lat), parseFloat(r.lon)], 15, { duration: 1 });
         }
       })
@@ -744,7 +770,7 @@
   // Filters
   [$filterCafe, $filterEspresso, $filterRoastery].forEach(function (cb) {
     cb.addEventListener('change', function () {
-      invalidateCache();
+      invalidateCache(true);
       fetchCoffeeShops();
     });
   });
