@@ -6,6 +6,7 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
+  "Access-Control-Expose-Headers": "X-Cache, X-Cache-Age",
 };
 
 // Simple hash for cache key
