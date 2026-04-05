@@ -513,7 +513,7 @@
   }
 
   // --- Main entry point ---
-  var MIN_FETCH_ZOOM = 15; // ~80% of max zoom (19)
+  var MIN_FETCH_ZOOM = 13; // one step below default (14)
 
   function fetchCoffeeShops() {
     var filterKey = getFilterKey();
