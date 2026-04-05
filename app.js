@@ -227,6 +227,52 @@
   }
 
   // --- Overpass API ---
+  function buildQuery(bbox) {
+    var filters = [];
+    if ($filterCafe.checked) {
+      filters.push('node["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
+      filters.push('way["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
+    }
+    if ($filterEspresso.checked) {
+      filters.push('node["cuisine"~"coffee|coffee_shop"]('+bbox+');');
+      filters.push('way["cuisine"~"coffee|coffee_shop"]('+bbox+');');
+    }
+    if ($filterRoastery.checked) {
+      filters.push('node["craft"="roastery"]('+bbox+');');
+      filters.push('way["craft"="roastery"]('+bbox+');');
+    }
+    if (filters.length === 0) return null;
+    return '[out:json][timeout:15];(' + filters.join('') + ');out center 80;';
+  }
+
+  function bboxString(bounds) {
+    return bounds.getSouth().toFixed(6) + ',' + bounds.getWest().toFixed(6) + ',' +
+           bounds.getNorth().toFixed(6) + ',' + bounds.getEast().toFixed(6);
+  }
+
+  function fireQuery(query, signal) {
+    var proxyUrl = SUPABASE_URL + '/functions/v1/overpass-proxy';
+    var directUrl = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+
+    if (sb) {
+      return fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY },
+        body: JSON.stringify({ query: query }),
+        signal: signal,
+      }).then(function (res) {
+        if (!res.ok) throw new Error('Proxy error ' + res.status);
+        return res.json();
+      }).catch(function (err) {
+        if (err.name === 'AbortError') throw err;
+        return fetch(directUrl, { signal: signal })
+          .then(function (res) { return res.json(); });
+      });
+    }
+    return fetch(directUrl, { signal: signal })
+      .then(function (res) { return res.json(); });
+  }
+
   function fetchCoffeeShops() {
     const bounds = map.getBounds();
     var center = map.getCenter();
@@ -241,66 +287,20 @@
     }
 
     var padded = bounds.pad(0.2);
-    const south = padded.getSouth().toFixed(6);
-    const west = padded.getWest().toFixed(6);
-    const north = padded.getNorth().toFixed(6);
-    const east = padded.getEast().toFixed(6);
-    const bbox = south + ',' + west + ',' + north + ',' + east;
+    var query = buildQuery(bboxString(padded));
 
-    const filters = [];
-    if ($filterCafe.checked) {
-      filters.push('node["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
-      filters.push('way["amenity"="cafe"]["cuisine"!~"ice_cream|bar|pub|pizza|burger|sandwich"]('+bbox+');');
-    }
-    if ($filterEspresso.checked) {
-      filters.push('node["cuisine"~"coffee|coffee_shop"]('+bbox+');');
-      filters.push('way["cuisine"~"coffee|coffee_shop"]('+bbox+');');
-    }
-    if ($filterRoastery.checked) {
-      filters.push('node["craft"="roastery"]('+bbox+');');
-      filters.push('way["craft"="roastery"]('+bbox+');');
-    }
-
-    if (filters.length === 0) {
+    if (!query) {
       clearMarkers();
       invalidateCache();
       return;
     }
-
-    const query = '[out:json][timeout:15];(' + filters.join('') + ');out center 80;';
 
     if (searchAbort) searchAbort.abort();
     searchAbort = new AbortController();
 
     showLoading();
 
-    var proxyUrl = SUPABASE_URL + '/functions/v1/overpass-proxy';
-    var directUrl = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
-
-    // Try cached proxy first, fall back to direct Overpass
-    var fetchPromise;
-    if (sb) {
-      fetchPromise = fetch(proxyUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY },
-        body: JSON.stringify({ query: query }),
-        signal: searchAbort.signal,
-      }).then(function (res) {
-        if (!res.ok) throw new Error('Proxy error ' + res.status);
-        return res.json();
-      }).catch(function (err) {
-        if (err.name === 'AbortError') throw err;
-        // Fallback to direct Overpass
-        console.warn('Proxy failed, falling back to direct:', err.message);
-        return fetch(directUrl, { signal: searchAbort.signal })
-          .then(function (res) { return res.json(); });
-      });
-    } else {
-      fetchPromise = fetch(directUrl, { signal: searchAbort.signal })
-        .then(function (res) { return res.json(); });
-    }
-
-    fetchPromise
+    fireQuery(query, searchAbort.signal)
       .then(function (data) {
         hideLoading();
         lastElements = data.elements || [];
@@ -309,6 +309,8 @@
         lastFilterKey = filterKey;
         lastFetchTime = Date.now();
         renderShops(lastElements);
+        // Prefetch surrounding areas in background
+        prefetchSurroundings(bounds);
       })
       .catch(function (err) {
         hideLoading();
@@ -316,6 +318,47 @@
           console.error('Overpass fetch error:', err);
         }
       });
+  }
+
+  // --- Prefetch surrounding tiles to warm the server cache ---
+  var prefetchTimer = null;
+
+  function prefetchSurroundings(bounds) {
+    if (!sb) return; // Only useful with server cache
+    clearTimeout(prefetchTimer);
+    // Delay slightly so we don't block the UI
+    prefetchTimer = setTimeout(function () { doPrefetch(bounds); }, 2000);
+  }
+
+  function doPrefetch(bounds) {
+    var lat = bounds.getNorth() - bounds.getSouth();
+    var lng = bounds.getEast() - bounds.getWest();
+
+    // 8 surrounding tiles: N, NE, E, SE, S, SW, W, NW
+    var offsets = [
+      [0, lat],    // N
+      [lng, lat],  // NE
+      [lng, 0],    // E
+      [lng, -lat], // SE
+      [0, -lat],   // S
+      [-lng, -lat],// SW
+      [-lng, 0],   // W
+      [-lng, lat], // NW
+    ];
+
+    offsets.forEach(function (off, i) {
+      var shifted = L.latLngBounds(
+        [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
+        [bounds.getNorth() + off[1], bounds.getEast() + off[0]]
+      );
+      var query = buildQuery(bboxString(shifted));
+      if (!query) return;
+
+      // Stagger requests to avoid hammering Overpass
+      setTimeout(function () {
+        fireQuery(query).catch(function () {}); // Fire-and-forget
+      }, i * 1500);
+    });
   }
 
   // --- Render shop markers ---
