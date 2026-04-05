@@ -343,7 +343,6 @@
         [bounds.getSouth() + off[1], bounds.getWest() + off[0]],
         [bounds.getNorth() + off[1], bounds.getEast() + off[0]]
       );
-      if (regionFullyCovered(shifted, filterKey, zoom)) return;
       if (alreadyQueued(shifted)) return;
       regionQueue.push({
         bounds: shifted, filterKey: filterKey, zoom: zoom,
@@ -371,15 +370,11 @@
     var filterKey = getFilterKey();
     var zoom = map.getZoom();
 
-    // Collect regions — always include viewport (cache hits are free),
-    // skip covered background regions
+    // Collect all regions — cache hits are free in batch mode
     var toFetch = [];
     var regionMap = {}; // id -> region
     for (var i = 0; i < regionQueue.length; i++) {
       var r = regionQueue[i];
-      if (!r.isViewport && regionFullyCovered(r.bounds, r.filterKey, r.zoom)) {
-        regionQueue.splice(i, 1); i--; continue;
-      }
       var bbox = bboxString(r.bounds);
       var query = buildQuery(bbox);
       if (!query) { regionQueue.splice(i, 1); i--; continue; }
